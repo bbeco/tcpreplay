@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "rpcap.h"
-
+/*
 int main()
 {
     int file = open("file.cap", O_RDONLY);
@@ -13,16 +13,23 @@ int main()
     }
     fpcap *fpc = readpcap(file);
     printf("Hello world!\n");
-    printf("pacchetti catturati%d\nlunghezza totale %ld\n", fpc->ghdr->tot_pkt, (long int)fpc->ghdr->tot_len);
-    printf("%d\n", fpc->list->hdr.ts_sec);
-    printf("%c\n", fpc->ghdr->resolution);
     destroy_pcap_file(&fpc);
     return 0;
 }
 
 
-
-
+/* The packets are organized in a list inside the pcap file structure. Each list
+   element has the following members:
+   - A packet header
+   - packet payload
+   - Pointer to the next packet
+*/
+/*struct pkt_list_element {
+    pcaprec_hdr_t hdr;
+    unsigned char *data;
+    struct pkt_list_element* p;
+};
+*/
 packet_data *new_packet_data() {
     packet_data *pkt = (packet_data *)calloc(sizeof(packet_data), 1);
     return pkt;

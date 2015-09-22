@@ -58,22 +58,17 @@ struct pcaprec_hdr {
 
 
 
-
 typedef struct pcap_hdr pcap_hdr_t;
 
 typedef struct pcaprec_hdr pcaprec_hdr_t;
 
-/* The packets are organized in a list inside the pcap file structure. Each list
-   element has the following members:
-   - A packet header
-   - packet payload
-   - Pointer to the next packet
-*/
 struct pkt_list_element {
     pcaprec_hdr_t hdr;
     unsigned char *data;
     struct pkt_list_element* p;
 };
+
+
 
 typedef struct pkt_list_element packet_data;
 

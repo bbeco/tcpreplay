@@ -137,7 +137,7 @@ prod()
 #define NETMAP_WITH_LIBS
 #include <net/netmap_user.h>
 #include <sys/poll.h>
-
+#include "custom_libpcap/rpcap.h"
 
 int verbose = 0;
 
@@ -303,6 +303,7 @@ struct _qs { /* shared queue */
 	/* parameters for reading from the netmap port */
 	struct nm_desc *src_port;		/* netmap descriptor */
 	const char *	prod_ifname;	/* interface name */
+	const char *	prod_pcap;		/* pcap name */
 	struct netmap_ring *rxring;	/* current ring being handled */
 	uint32_t	si;		/* ring index */
 	int		burst;
@@ -384,7 +385,7 @@ struct pipe_args {
 
 #define NS_IN_S	(1000000000ULL)	// nanoseconds
 #define TIME_UNITS	NS_IN_S
-
+#define NS_IN_US (1000ULL)
 /* set the thread affinity. */
 static int
 setaffinity(int i)
@@ -413,7 +414,9 @@ setaffinity(int i)
 	}
         return 0;
 }
-
+/*
+ * setta in now il valore in nanosecondi del tempo attuale -t0 (ns)
+ */
 
 static inline void
 set_tns_now(uint64_t *now, uint64_t t0)
@@ -742,9 +745,105 @@ prod(void *_pa)
 	    enq(q);
 	}
 	q->tail = q->prod_tail; /* notify */
+    
     }
     D("exiting on abort");
     return NULL;
+}
+
+static inline int
+enq_pcap (struct _qs* q)
+{
+	uint64_t need;
+	struct q_pkt *p = pkt_at(q,q->prod_tail);
+	//ED("q->prod_tail:%llu",q->prod_tail);
+	p->pktlen = q->cur_len;
+	p->pt_qout = q->qt_qout;
+	//ED("siamo nel enq_pcap");
+	p->pt_tx = q->qt_tx; 
+	need = pad(q->cur_len)+sizeof(*p);
+	nm_pkt_copy(q->cur_pkt,(char*)(p+1),q->cur_len);
+	p->next = q->prod_tail + need;
+	q->prod_tail = p->next;
+	q->tx++;
+	return 0;	
+}
+
+static inline uint64_t 
+convert_ts (char resolution, packet_data *aux)
+{
+	if(resolution == 'n'){
+		return (uint64_t)aux->hdr.ts_sec*NS_IN_S + (uint64_t)aux->hdr.ts_usec;
+	} else { //pcap resolution is 'm'
+		return (uint64_t)aux->hdr.ts_sec*NS_IN_S + (uint64_t)aux->hdr.ts_usec*NS_IN_US;
+	}
+}
+
+#define DEFAULT_BW 1000000000ULL
+static void *
+pcap_prod(void *_pa)
+{
+	uint64_t need;
+	uint64_t next_ts;
+	uint64_t bandwidth = DEFAULT_BW;//default bandwidth just in case we have only a pkt
+	struct pipe_args *pa = _pa;
+    struct _qs *q = &pa->q;
+    fpcap *pcap = NULL;
+	int fd = 0;
+	int repeat = 1; //number of copy of the same packets set in queue
+	int insert = 0; //packet counter
+	packet_data *aux = NULL;
+	fd = (open(q->prod_pcap,O_RDONLY));
+	if (fd < 0){
+		ED("unable to open file %s",q->prod_pcap);
+		goto fail;
+	}
+	pcap = readpcap(fd);
+	if (pcap == NULL){
+		ED("non legge");
+		goto fail;
+	}
+	need = pcap->ghdr->tot_len+pcap->ghdr->tot_pkt*sizeof(struct q_pkt);
+	q->buf =(char*)calloc(1,need);// XXX può bastare questa grandezza?
+	if(q->buf == NULL){
+		ED("alloc %ld bytes for queue failed, exiting",(_P64)need);
+		goto fail;
+	}
+	q->buflen = need;		
+	aux = pcap->list;
+	if(aux == NULL){
+		ED("pcap file is empty, exiting");
+		goto fail;
+	}
+	q->t0 = convert_ts(pcap->ghdr->resolution,aux);
+	ED("Starting at time %llu", (long long unsigned int)q->t0);
+	q->qt_qout = q->prod_now = 0;
+	q->qt_tx = 0;
+	while (insert < repeat*pcap->ghdr->tot_pkt && !do_abort){
+		if(aux->p == NULL){
+			q->cur_tt = aux->hdr.incl_len*8ULL*TIME_UNITS/bandwidth;
+			
+		} else {
+			q->cur_tt = convert_ts(pcap->ghdr->resolution,aux->p)-q->qt_qout-q->t0;
+			bandwidth = aux->hdr.incl_len*8ULL*DEFAULT_BW/q->cur_tt;
+		}				
+	 	ND("cur_tt: %llu", (long long unsigned int)q->cur_tt);
+		//ED("siamo nel while");
+		q->cur_len = aux->hdr.incl_len;
+		q->qt_qout += q->cur_tt;
+		q->cur_pkt = (char*)aux->data;
+		enq_pcap(q);
+		q->qt_tx += q->cur_tt;//aggiorniamo l'inizio della trasmissione al nuovo pacchetto
+		insert++;
+		aux = aux->p;
+	}
+	q->tail = q->prod_tail;
+	ED("q->tail:%d",(int)q->tail);
+	return NULL;
+	fail:
+	ED("siamo nel fail");
+	nm_close(pa->pb);
+	return (NULL);
 }
 
 
@@ -767,8 +866,9 @@ cons(void *_pa)
 
 	p = (struct q_pkt *)(q->buf + q->head);
 	__builtin_prefetch (q->buf + p->next);
+	//ED("p->pt_tx:%llu,q->cons_now:%llu",p->pt_tx/NS_IN_S,q->cons_now/NS_IN_S);
 	if (q->head == q->tail || ts_cmp(p->pt_tx, q->cons_now) > 0) {
-	    ND(4, "                 >>>> TXSYNC, pkt not ready yet h %ld t %ld now %ld tx %ld",
+	    ND(4,"                 >>>> TXSYNC, pkt not ready yet h %ld t %ld now %ld tx %ld",
 		q->head, q->tail, q->cons_now, p->pt_tx);
 	    q->rx_wait++;
 	    ioctl(pa->pb->fd, NIOCTXSYNC, 0); // XXX just in case
@@ -783,7 +883,7 @@ cons(void *_pa)
 	pending++;
 	if (nm_inject(pa->pb, (char *)(p + 1), p->pktlen) == 0 ||
 		pending > q->burst) {
-	    ND(5, "inject failed len %d now %ld tx %ld h %ld t %ld next %ld",
+	    ED("inject failed len %d now %ld tx %ld h %ld t %ld next %ld",
 		(int)p->pktlen, q->cons_now, p->pt_tx, q->head, q->tail, p->next);
 	    ioctl(pa->pb->fd, NIOCTXSYNC, 0);
 	    pending = 0;
@@ -834,46 +934,61 @@ prodcons_main(void *_a)
      * then add the queue size i bytes, then multiply by three due
      * to the packet expansion for padding
      */
+	need = q->max_bps ? q->max_bps : 10ULL*1000*1000*1000; /* default 10G */
+	need *= q->max_delay + 1000000;	/* delay is in nanoseconds */
+	need /= TIME_UNITS; /* total bits */
+	need /= 8; /* in bytes */
+	need += q->qsize; /* in bytes */
+	need += 3 * MAX_PKT; // safety
+	/*
+	 * This is the memory strictly for packets.
+	 * The size can increase a lot if we account for descriptors and
+	 * rounding.
+	 * In fact, the expansion factor can be up to a factor of 3
+	 * for particularly bad situations (65-byte packets)
+	 */
+	need *= 3; /* room for descriptors and padding */
 
-    need = q->max_bps ? q->max_bps : 10ULL*1000*1000*1000; /* default 10G */
-    need *= q->max_delay + 1000000;	/* delay is in nanoseconds */
-    need /= TIME_UNITS; /* total bits */
-    need /= 8; /* in bytes */
-    need += q->qsize; /* in bytes */
-    need += 3 * MAX_PKT; // safety
-
-    /*
-     * This is the memory strictly for packets.
-     * The size can increase a lot if we account for descriptors and
-     * rounding.
-     * In fact, the expansion factor can be up to a factor of 3
-     * for particularly bad situations (65-byte packets)
-     */
-    need *= 3; /* room for descriptors and padding */
-
-    q->buf = calloc(1, need);
-    if (q->buf == NULL) {
+	q->buf = calloc(1, need);
+	if (q->buf == NULL) {
 	ED("alloc %ld bytes for queue failed, exiting", (_P64)need);
 	nm_close(a->pa);
 	nm_close(a->pb);
 	return(NULL);
-    }
-    q->buflen = need;
-    ED("----\n\t%s -> %s :  bps %ld delay %s loss %s queue %ld bytes"
+	}
+	q->buflen = need;
+	ED("----\n\t%s -> %s :  bps %ld delay %s loss %s queue %ld bytes"
 	"\n\tbuffer %lu bytes",
 	q->prod_ifname, q->cons_ifname,
 	(_P64)q->max_bps, q->c_delay.optarg, q->c_loss.optarg, (_P64)q->qsize,
 	(_P64)q->buflen);
-
-    q->src_port = a->pa;
-
-    pthread_create(&a->prod_tid, NULL, prod, (void*)a);
+	q->src_port = a->pa;
+	pthread_create(&a->prod_tid, NULL, prod, (void*)a);
     /* continue as cons() */
     cons((void*)a);
     D("exiting on abort");
     return NULL;
 }
 
+static void *
+pcap_prodcons_main(void *_a)
+{
+    struct pipe_args *a = _a;
+    struct _qs *q = &a->q;
+    uint64_t need;
+
+    setaffinity(a->cons_core);
+    a->pb = nm_open(q->cons_ifname, NULL, NETMAP_NO_TX_POLL,NULL);
+    if (a->pb == NULL) {
+	ED("cannot open %s", q->cons_ifname);
+	return NULL;
+    }
+	pcap_prod((void*)a);
+    /* continue as cons() */
+    cons((void*)a);
+    D("exiting on abort");
+    return NULL;
+}
 
 
 static void
@@ -1026,14 +1141,16 @@ main(int argc, char **argv)
 
 #define	N_OPTS	2
 	struct pipe_args bp[N_OPTS];
-	const char *d[N_OPTS], *b[N_OPTS], *l[N_OPTS], *q[N_OPTS], *ifname[N_OPTS];
+	const char *d[N_OPTS], *b[N_OPTS], *l[N_OPTS], *q[N_OPTS], *ifname[N_OPTS], *p[N_OPTS]; //p stands for file pcap, XXX 2 just in case?
 	int cores[4] = { 2, 8, 4, 10 }; /* default values */
+	
 
 	bzero(d, sizeof(d));
 	bzero(b, sizeof(b));
 	bzero(l, sizeof(l));
 	bzero(q, sizeof(q));
 	bzero(ifname, sizeof(ifname));
+	
 
 	fprintf(stderr, "%s built %s %s\n", argv[0], __DATE__, __TIME__);
 
@@ -1057,8 +1174,9 @@ main(int argc, char **argv)
 	// i	interface name (two mandatory)
 	// v	verbose
 	// b	batch size
-
-	while ( (ch = getopt(argc, argv, "B:C:D:L:Q:b:ci:vw:")) != -1) {
+	// p 	file pcap
+	
+	while ( (ch = getopt(argc, argv, "B:C:D:L:Q:b:ci:vw:p:")) != -1) {
 		switch (ch) {
 		default:
 			D("bad option %c %s", ch, optarg);
@@ -1125,6 +1243,9 @@ main(int argc, char **argv)
 		case 'w':
 			bp[0].wait_link = atoi(optarg);
 			break;
+		case 'p':
+			add_to(p, N_OPTS, optarg, " -p too many times");
+			break;
 		}
 
 	}
@@ -1134,8 +1255,9 @@ main(int argc, char **argv)
 
 	/*
 	 * consistency checks for common arguments
-	 */
-	if (!ifname[0] || !ifname[0]) {
+	 * if pcap file has been provided we need just one interface, two otherwise
+	 */  
+	if (!ifname[0] || !ifname[1]) {
 		ED("missing interface(s)");
 		usage();
 	}
@@ -1151,11 +1273,14 @@ main(int argc, char **argv)
 		ED("invalid wait_link %d, set to 4", bp[0].wait_link);
 		bp[0].wait_link = 4;
 	}
-
+	
 	bp[1] = bp[0]; /* copy parameters, but swap interfaces */
 	bp[0].q.prod_ifname = bp[1].q.cons_ifname = ifname[0];
 	bp[1].q.prod_ifname = bp[0].q.cons_ifname = ifname[1];
-
+	// copy parameters for pcap
+	bp[0].q.prod_pcap = p[0];
+	bp[1].q.prod_pcap = p[1] == NULL ? p[0] : p[1];
+	ED("il file è %s",p[0]);
 	/* assign cores. prod and cons work better if on the same HT */
 	bp[0].cons_core = cores[0];
 	bp[0].prod_core = cores[1];
@@ -1194,10 +1319,13 @@ main(int argc, char **argv)
 		ED("qsize= 0 is not valid, set to 50k");
 		bp[1].q.qsize = 50000;
 	}
-
-	pthread_create(&bp[0].cons_tid, NULL, prodcons_main, (void*)&bp[0]);
-	pthread_create(&bp[1].cons_tid, NULL, prodcons_main, (void*)&bp[1]);
-
+	if(!p[0]){
+		pthread_create(&bp[0].cons_tid, NULL, prodcons_main, (void*)&bp[0]);
+		pthread_create(&bp[1].cons_tid, NULL, prodcons_main, (void*)&bp[1]);
+	} else {
+		pthread_create(&bp[0].cons_tid, NULL, pcap_prodcons_main, (void*)&bp[0]);
+		pthread_create(&bp[1].cons_tid, NULL, pcap_prodcons_main, (void*)&bp[1]);
+	}
 	signal(SIGINT, sigint_h);
 	sleep(1);
 	while (!do_abort) {
@@ -1238,6 +1366,8 @@ struct _sm {	/* string and multiplier */
 
 /*
  * parse a generic value
+ * parsa una stringa cercando numero + fattore di conversione (kK,mM,gG)
+ * in d c'è il valore con il giusto scaling
  */
 static double
 parse_gen(const char *arg, const struct _sm *conv, int *err)
