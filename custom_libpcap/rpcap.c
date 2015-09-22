@@ -13,33 +13,27 @@ int main()
     }
     fpcap *fpc = readpcap(file);
     printf("Hello world!\n");
+    printf("pacchetti catturati%d\nlunghezza totale %ld\n", fpc->ghdr->tot_pkt, (long int)fpc->ghdr->tot_len);
+    printf("%d\n", fpc->list->hdr.ts_sec);
+    printf("%c\n", fpc->ghdr->resolution);
     destroy_pcap_file(&fpc);
     return 0;
 }
 
 
-/* The pakets are organized in a list inside the pcap file structure. Each list
-   element has the following members:
-   - A paket header
-   - Paket payload
-   - Pointer to the next paket
-*/
-struct pkt_list_element {
-    pcaprec_hdr_t hdr;
-    unsigned char *data;
-    struct pkt_list_element* p;
-};
 
-paket_data *new_paket_data() {
-    paket_data *pkt = (paket_data *)calloc(sizeof(paket_data), 1);
+
+packet_data *new_packet_data() {
+    packet_data *pkt = (packet_data *)calloc(sizeof(packet_data), 1);
     return pkt;
 }
 
 fpcap *new_fpcap() {
-    fpcap *filepcap = (fpcap *)malloc(sizeof(fpcap));
-    filepcap->ghdr = NULL;
+    fpcap *filepcap = (fpcap *)calloc(1, sizeof(fpcap));
+    /*filepcap->ghdr = NULL;
     filepcap->list = NULL;
     filepcap->end = NULL;
+    */
     return filepcap;
 }
 
@@ -47,7 +41,7 @@ fpcap *new_fpcap() {
 // Destroy a pcap file
 void destroy_pcap_file(fpcap **file) {
     if (!*file) return;
-    paket_data *tmp;
+    packet_data *tmp;
     if ((*file)->ghdr) {
         free((*file)->ghdr);
         (*file)->ghdr = NULL;
@@ -65,9 +59,9 @@ void destroy_pcap_file(fpcap **file) {
     *file = NULL;
 }
 
-// Insert a paket in the pcap file struct ordered by means of ther timestamp
-void insert_pkt(fpcap *file, paket_data *pkt) {
-    paket_data *a, *b;
+// Insert a packet in the pcap file struct ordered by means of ther timestamp
+void insert_pkt(fpcap *file, packet_data *pkt) {
+    packet_data *a, *b;
     if (pkt == NULL) return;
     // Empty list
     if (file->list == NULL) {
@@ -123,12 +117,12 @@ int read_next_info(int file, unsigned char *data, int size, char swap) {
 // structure's address
 fpcap *readpcap(int file) {
     fpcap *filepcap = new_fpcap();
-    paket_data *pkt;
+    packet_data *pkt;
     int ret;
     // If the system's byte ordering is different than file's, swap = 1
     char swap;
 
-    filepcap->ghdr = (pcap_hdr_t *)malloc(sizeof(pcap_hdr_t));
+    filepcap->ghdr = (pcap_hdr_t *)calloc(1, sizeof(pcap_hdr_t));
 
     ret = read(file, &(filepcap->ghdr->magic_number), sizeof(uint32_t));
     if (ret != sizeof(uint32_t)) {
@@ -164,7 +158,7 @@ fpcap *readpcap(int file) {
             goto fail;
     }
     while(1) {
-        pkt = new_paket_data();
+        pkt = new_packet_data();
         ret = read_next_info(file, (unsigned char *)&(pkt->hdr.ts_sec), sizeof(uint32_t), swap);
         if (ret != sizeof(uint32_t)) {
             if (ret == 0) {
@@ -186,6 +180,8 @@ fpcap *readpcap(int file) {
             goto fail;
         }
         insert_pkt(filepcap, pkt);
+        filepcap->ghdr->tot_len += pkt->hdr.incl_len;
+        filepcap->ghdr->tot_pkt++;
     }
 
     return filepcap;

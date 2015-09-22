@@ -29,6 +29,10 @@ struct pcap_hdr {
     at the beginning of the packet (e.g. 1 for Ethernet); this can be various
     types such as 802.11, 802.11 with various radio information, PPP, Token
     Ring, FDDI, etc.*/
+    
+    //XXX
+    uint32_t tot_pkt;
+    uint64_t tot_len;
 };
 
 struct pcaprec_hdr {
@@ -59,21 +63,33 @@ typedef struct pcap_hdr pcap_hdr_t;
 
 typedef struct pcaprec_hdr pcaprec_hdr_t;
 
-typedef struct pkt_list_element paket_data;
+/* The packets are organized in a list inside the pcap file structure. Each list
+   element has the following members:
+   - A packet header
+   - packet payload
+   - Pointer to the next packet
+*/
+struct pkt_list_element {
+    pcaprec_hdr_t hdr;
+    unsigned char *data;
+    struct pkt_list_element* p;
+};
+
+typedef struct pkt_list_element packet_data;
 
 
 /* The pcap file structure has the following members:
    - A global header which is pcap_hdr_t
-   - A list of pakets with the following members:
-       + A paket header
-       + Paket payload
-       + Pointer to the next paket
-   - A pointer to the last paket in the list
+   - A list of packets with the following members:
+       + A packet header
+       + packet payload
+       + Pointer to the next packet
+   - A pointer to the last packet in the list
 */
 typedef struct pcap_file {
     pcap_hdr_t *ghdr;
-    paket_data *list;
-    paket_data *end;
+    packet_data *list;
+    packet_data *end;
 } fpcap;
 
 fpcap *readpcap(int file);
