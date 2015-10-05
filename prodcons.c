@@ -289,6 +289,7 @@ struct _qs { /* shared queue */
 	struct _cfg	c_delay;
 	struct _cfg	c_bw;
 	struct _cfg	c_loss;
+	struct _cfg	c_pmode;	//handler for pcap transmission mode
 
 	/* producer's fields */
 	uint64_t	tx ALIGN_CACHE;	/* tx counter */
@@ -803,7 +804,7 @@ pcap_prod(void *_pa)
 		ED("non legge");
 		goto fail;
 	}
-	need = pcap->ghdr->tot_len+pcap->ghdr->tot_pkt*sizeof(struct q_pkt);
+	need = 2*pcap->ghdr->tot_len+pcap->ghdr->tot_pkt*sizeof(struct q_pkt);	//TODO fix to correct size
 	q->buf =(char*)calloc(1,need);// XXX può bastare questa grandezza?
 	if(q->buf == NULL){
 		ED("alloc %ld bytes for queue failed, exiting",(_P64)need);
@@ -815,24 +816,29 @@ pcap_prod(void *_pa)
 		ED("pcap file is empty, exiting");
 		goto fail;
 	}
-	q->t0 = convert_ts(pcap->ghdr->resolution,aux);
+	/*
+	 * Setting t0 to the capture time
+	 */
+	q->t0 = convert_ts(pcap->ghdr->resolution, aux);
 	ED("Starting at time %llu", (long long unsigned int)q->t0);
 	q->qt_qout = q->prod_now = 0;
 	q->qt_tx = 0;
 	while (insert < repeat*pcap->ghdr->tot_pkt && !do_abort){
-		if(aux->p == NULL){
+		/*if(aux->p == NULL){
 			q->cur_tt = aux->hdr.incl_len*8ULL*TIME_UNITS/bandwidth;
 			
 		} else {
 			q->cur_tt = convert_ts(pcap->ghdr->resolution,aux->p)-q->qt_qout-q->t0;
 			bandwidth = aux->hdr.incl_len*8ULL*DEFAULT_BW/q->cur_tt;
-		}				
+		}*/
+						
 	 	ND("cur_tt: %llu", (long long unsigned int)q->cur_tt);
-		//ED("siamo nel while");
 		q->cur_len = aux->hdr.incl_len;
+		q->c_pmode.run(q, &q->c_pmode);	//computing transmission time
 		q->qt_qout += q->cur_tt;
 		q->cur_pkt = (char*)aux->data;
 		enq_pcap(q);
+		NED("q->prod_tail = %llu", q->prod_tail);
 		q->qt_tx += q->cur_tt;//aggiorniamo l'inizio della trasmissione al nuovo pacchetto
 		insert++;
 		aux = aux->p;
@@ -840,8 +846,7 @@ pcap_prod(void *_pa)
 	q->tail = q->prod_tail;
 	ED("q->tail:%d",(int)q->tail);
 	return NULL;
-	fail:
-	ED("siamo nel fail");
+fail:
 	nm_close(pa->pb);
 	return (NULL);
 }
@@ -858,9 +863,27 @@ cons(void *_pa)
     struct _qs *q = &pa->q;
     int cycles = 0;
     int pending = 0;
+    
+    /*
+     * This is used when a cap file has been provided.
+     * We need this value to insert a correct time value in cons_now 
+     * using the set_tns_now() function.
+     */
+    uint64_t start_t = 0;
 
     (void)cycles; // XXX disable warning
-    set_tns_now(&q->cons_now, q->t0);
+    /* if the queue has been filled by a cap file, t0 contains the 
+     * time when the cap file has been produced (capturing time).
+     * Otherwise, we set t0 and cons->now to the current time (cons_now 
+     * is relative to t0).
+     */ 
+    if (q->prod_pcap) {
+	    ED("The capture file is found");
+	    set_tns_now(&start_t, 0);
+	    q->cons_now = 0;
+    } else {
+	    set_tns_now(&q->cons_now, q->t0);
+    }
     while (!do_abort) { /* consumer, infinite */
 	struct q_pkt *p;
 
@@ -868,13 +891,19 @@ cons(void *_pa)
 	__builtin_prefetch (q->buf + p->next);
 	//ED("p->pt_tx:%llu,q->cons_now:%llu",p->pt_tx/NS_IN_S,q->cons_now/NS_IN_S);
 	if (q->head == q->tail || ts_cmp(p->pt_tx, q->cons_now) > 0) {
-	    ND(4,"                 >>>> TXSYNC, pkt not ready yet h %ld t %ld now %ld tx %ld",
+	    /*ND(4,"                 >>>> TXSYNC, pkt not ready yet h %ld t %ld now %ld tx %ld",
+		q->head, q->tail, q->cons_now, p->pt_tx);*/
+	     NED("                 >>>> TXSYNC, pkt not ready yet h %llu t %llu now %llu tx %llu",
 		q->head, q->tail, q->cons_now, p->pt_tx);
 	    q->rx_wait++;
 	    ioctl(pa->pb->fd, NIOCTXSYNC, 0); // XXX just in case
 	    pending = 0;
 	    usleep(5);
-	    set_tns_now(&q->cons_now, q->t0);
+	    if (q->prod_pcap) {
+		set_tns_now(&q->cons_now, start_t);
+	    } else {
+		set_tns_now(&q->cons_now, q->t0);
+	    }
 	    continue;
 	}
 	ND(5, "drain len %ld now %ld tx %ld h %ld t %ld next %ld",
@@ -893,6 +922,7 @@ cons(void *_pa)
 	q->head = p->next;
 	/* drain packets from the queue */
 	q->rx++;
+	ED("q->rx: %llu", q->rx);
 	// XXX barrier
     }
     D("exiting on abort");
@@ -1113,6 +1143,7 @@ cmd_apply(const struct _cfg *a, const char *arg, struct _qs *q, struct _cfg *dst
 static struct _cfg delay_cfg[];
 static struct _cfg bw_cfg[];
 static struct _cfg loss_cfg[];
+static struct _cfg pmode_cfg[];	//pcap transmission mode
 
 static uint64_t parse_bw(const char *arg);
 static uint64_t parse_qsize(const char *arg);
@@ -1141,7 +1172,7 @@ main(int argc, char **argv)
 
 #define	N_OPTS	2
 	struct pipe_args bp[N_OPTS];
-	const char *d[N_OPTS], *b[N_OPTS], *l[N_OPTS], *q[N_OPTS], *ifname[N_OPTS], *p[N_OPTS]; //p stands for file pcap, XXX 2 just in case?
+	const char *d[N_OPTS], *b[N_OPTS], *l[N_OPTS], *q[N_OPTS], *ifname[N_OPTS], *p[N_OPTS], *m[N_OPTS]; //p stands for file pcap, XXX 2 just in case?
 	int cores[4] = { 2, 8, 4, 10 }; /* default values */
 	
 
@@ -1149,6 +1180,7 @@ main(int argc, char **argv)
 	bzero(b, sizeof(b));
 	bzero(l, sizeof(l));
 	bzero(q, sizeof(q));
+	bzero(m, sizeof(m));
 	bzero(ifname, sizeof(ifname));
 	
 
@@ -1164,6 +1196,8 @@ main(int argc, char **argv)
 	    q->c_loss.run = null_run_fn;
 	    q->c_bw.optarg = "0";
 	    q->c_bw.run = null_run_fn;
+	    q->c_pmode.optarg = "0";
+	    q->c_pmode.run = null_run_fn;
 	}
 
 	// Options:
@@ -1175,8 +1209,9 @@ main(int argc, char **argv)
 	// v	verbose
 	// b	batch size
 	// p 	file pcap
+	// m	pcap transmission mode (real/fast/fixed)
 	
-	while ( (ch = getopt(argc, argv, "B:C:D:L:Q:b:ci:vw:p:")) != -1) {
+	while ( (ch = getopt(argc, argv, "B:C:D:L:Q:b:ci:vw:p:m:")) != -1) {
 		switch (ch) {
 		default:
 			D("bad option %c %s", ch, optarg);
@@ -1246,6 +1281,9 @@ main(int argc, char **argv)
 		case 'p':
 			add_to(p, N_OPTS, optarg, " -p too many times");
 			break;
+		case 'm':
+			add_to(m, N_OPTS, optarg, " -m too many times");
+			break;
 		}
 
 	}
@@ -1295,6 +1333,8 @@ main(int argc, char **argv)
 		b[1] = b[0];
 	if (l[1] == NULL)
 		l[1] = l[0];
+	if (m[1] == NULL)
+		m[1] = m[0];
 
 	/* apply commands */
 	for (i = 0; i < N_OPTS; i++) { /* once per queue */
@@ -1302,6 +1342,7 @@ main(int argc, char **argv)
 		err += cmd_apply(delay_cfg, d[i], q, &q->c_delay);
 		err += cmd_apply(bw_cfg, b[i], q, &q->c_bw);
 		err += cmd_apply(loss_cfg, l[i], q, &q->c_loss);
+		err += cmd_apply(pmode_cfg, m[i], q, &q->c_pmode);	//pcap configuration
 	}
 
 	if (q[0] == NULL)
@@ -1884,5 +1925,106 @@ static struct _cfg loss_cfg[] = {
 		"plr,prob # 0 <= prob <= 1", _CFG_END },
 	{ const_ber_parse, const_ber_run,
 		"ber,prob # 0 <= prob <= 1", _CFG_END },
+	{ NULL, NULL, NULL, _CFG_END }
+};
+
+/* Now some functions and data structures for managing pcap 
+ * transmission.
+ * The set of *_parse functions returns 1 on error (impossible 
+ * configuration), 2 on unrecognized configuration and 0 if the 
+ * configuration has been parsed without problems.
+ * The set of *_run function instead set the correct timing values for 
+ * the pkt according to the chosen configuration.
+ */
+static int
+real_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
+{
+	if (ac > 2) {
+		return 1;	/* error */
+	}
+	
+	if (ac == 2 || strncmp(av[0], "real", 4) != 0) {
+		return 2;	/* unrecognised */
+	}
+	
+	//here we have both ac = 1 and av[0] = "real"
+	//no further actions needed
+	return 0;
+}
+
+static int
+real_pmode_run(struct _qs *q, struct _cfg *arg)
+{
+	ED("pcap mode: real");
+	return 0;
+}
+
+static int
+fast_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
+{
+	if (ac > 2) {
+		return 1;	/* error */
+	}
+	
+	if (ac == 2 || strncmp(av[0], "fast", 4) != 0) {
+		return 2;	/* unrecognised */
+	}
+	
+	//here we have both ac = 1 and av[0] = "real"
+	//no further actions needed
+	return 0;
+}
+
+static int
+fast_pmode_run(struct _qs *q, struct _cfg *arg)
+{
+	NED("pcap mode: fast");
+	q->cur_tt = 0;
+	return 0;
+}
+
+static int
+fixed_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
+{
+	uint64_t bw;
+	
+	if (ac > 2) {
+		return 1;	/* error */
+	}
+	
+	if (ac == 1) {
+		return 2;	/* unrecognized */
+	}
+	
+	if (ac > 1 && strncmp(av[0], "fixed", 5) != 0) {
+		return 1;	/* error */
+	}
+	
+	/* 
+	 * here we have both ac = 2 and av[0] = "real". av[1] contains 
+	 * the desired bandwidth.
+	 */	
+	bw = parse_bw(av[ac - 1]);
+	if (bw == U_PARSE_ERR) {
+		return 1;
+	}
+	dst->d[0] = bw;
+	return 0;
+}
+
+static int
+fixed_pmode_run(struct _qs *q, struct _cfg *arg)
+{
+	ED("pcap mode: fixed. Chosen bw = %llu", arg->d[0]);
+	return 0;
+}
+
+/* 
+ * The next struct contains all the possible mode for a cap transmission
+ */
+static struct _cfg pmode_cfg[] = {
+	{ real_pmode_parse, real_pmode_run, "-m <mode>[,<value>]", _CFG_END },
+	{ fast_pmode_parse, fast_pmode_run, "-m <mode>[,<value>]", _CFG_END },
+	{ fixed_pmode_parse, fixed_pmode_run, "-m <mode>[,<value>]", _CFG_END },
 	{ NULL, NULL, NULL, _CFG_END }
 };
