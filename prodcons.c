@@ -300,11 +300,11 @@ struct _qs { /* shared queue */
 	uint64_t	prod_now;	/* most recent producer timestamp */
 	uint64_t	prod_drop;	/* drop packet count */
 	uint64_t	prod_max_gap;	/* rx round duration */
+	const char 	*pcap_prod;	/* pcap file for the producer */
 
 	/* parameters for reading from the netmap port */
 	struct nm_desc *src_port;		/* netmap descriptor */
 	const char *	prod_ifname;	/* interface name */
-	const char *	prod_pcap;		/* pcap name */
 	struct netmap_ring *rxring;	/* current ring being handled */
 	uint32_t	si;		/* ring index */
 	int		burst;
@@ -380,6 +380,8 @@ struct pipe_args {
 
 	struct nm_desc *pa;		/* netmap descriptor */
 	struct nm_desc *pb;
+	
+	fpcap *pcap;			/* the pcap struct */
 
 	struct _qs	q;
 };
@@ -789,22 +791,13 @@ pcap_prod(void *_pa)
 	uint64_t bandwidth = DEFAULT_BW;//default bandwidth just in case we have only a pkt
 	struct pipe_args *pa = _pa;
     struct _qs *q = &pa->q;
-    fpcap *pcap = NULL;
+	fpcap *pcap = &pa->pcap;
 	int fd = 0;
 	int repeat = 1; //number of copy of the same packets set in queue
 	int insert = 0; //packet counter
 	packet_data *aux = NULL;
-	fd = (open(q->prod_pcap,O_RDONLY));
-	if (fd < 0){
-		ED("unable to open file %s",q->prod_pcap);
-		goto fail;
-	}
-	pcap = readpcap(fd);
-	if (pcap == NULL){
-		ED("non legge");
-		goto fail;
-	}
-	need = 2*pcap->ghdr->tot_len+pcap->ghdr->tot_pkt*sizeof(struct q_pkt);	//TODO fix to correct size
+	 
+	need = 2*(pcap->ghdr->tot_len + pcap->ghdr->tot_pkt*sizeof(struct q_pkt));	//TODO fix to correct size
 	q->buf =(char*)calloc(1,need);// XXX può bastare questa grandezza?
 	if(q->buf == NULL){
 		ED("alloc %ld bytes for queue failed, exiting",(_P64)need);
@@ -877,7 +870,7 @@ cons(void *_pa)
      * Otherwise, we set t0 and cons->now to the current time (cons_now 
      * is relative to t0).
      */ 
-    if (q->prod_pcap) {
+    if (q->pcap_prod) {
 	    ED("The capture file is found");
 	    set_tns_now(&start_t, 0);
 	    q->cons_now = 0;
@@ -899,7 +892,7 @@ cons(void *_pa)
 	    ioctl(pa->pb->fd, NIOCTXSYNC, 0); // XXX just in case
 	    pending = 0;
 	    usleep(5);
-	    if (q->prod_pcap) {
+	    if (q->pcap_prod) {
 		set_tns_now(&q->cons_now, start_t);
 	    } else {
 		set_tns_now(&q->cons_now, q->t0);
@@ -1005,6 +998,9 @@ pcap_prodcons_main(void *_a)
 {
     struct pipe_args *a = _a;
     struct _qs *q = &a->q;
+    const char *cap_fname = q->pcap_prod;
+    fpcap *pcap = NULL;
+    int fd = 0;
     uint64_t need;
 
     setaffinity(a->cons_core);
@@ -1013,10 +1009,30 @@ pcap_prodcons_main(void *_a)
 	ED("cannot open %s", q->cons_ifname);
 	return NULL;
     }
-	pcap_prod((void*)a);
+	if (cap_fname == NULL) {
+		goto fail;
+	}	
+	fd = open(cap_fname, O_RDONLY);
+	if (fd < 0){
+		ED("unable to open file %s", cap_fname);
+		goto fail;
+	}
+	pcap = readpcap(fd);
+	if (pcap == NULL){
+		ED("unable to open file %s", cap_fname);
+		goto fail;
+	}
+    pcap_prod((void*)a);
     /* continue as cons() */
     cons((void*)a);
     D("exiting on abort");
+fail:
+	if (fd != 0) {
+		close(fd);
+	}
+	if (pcap != NULL) {
+		destroy_pcap_file(&pcap);
+	}
     return NULL;
 }
 
@@ -1315,9 +1331,9 @@ main(int argc, char **argv)
 	bp[1] = bp[0]; /* copy parameters, but swap interfaces */
 	bp[0].q.prod_ifname = bp[1].q.cons_ifname = ifname[0];
 	bp[1].q.prod_ifname = bp[0].q.cons_ifname = ifname[1];
-	// copy parameters for pcap
-	bp[0].q.prod_pcap = p[0];
-	bp[1].q.prod_pcap = p[1] == NULL ? p[0] : p[1];
+	/* copy pcap file name */
+	bp[0].q.pcap_prod = p[0];
+	bp[1].q.pcap_prod = p[1] == NULL ? p[0] : p[1];
 	ED("il file è %s",p[0]);
 	/* assign cores. prod and cons work better if on the same HT */
 	bp[0].cons_core = cores[0];
@@ -1939,8 +1955,12 @@ static struct _cfg loss_cfg[] = {
 static int
 real_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
 {
+	int fd = 0;
+	const char *cap_fname = q->pcap_prod;
+	fpcap *pcap = NULL;
+	
 	if (ac > 2) {
-		return 1;	/* error */
+		goto fail;
 	}
 	
 	if (ac == 2 || strncmp(av[0], "real", 4) != 0) {
@@ -1948,14 +1968,41 @@ real_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
 	}
 	
 	//here we have both ac = 1 and av[0] = "real"
-	//no further actions needed
+	/* Now we need to save the pcap struct in order to access it 
+	 * during the following real_pmode_run() calls. This pcap is 
+	 * saved in the arg field of the dst _cfg.
+	 */
+	if (cap_fname == NULL) {
+		goto fail;
+	}
+	
+	fd = open(cap_fname, O_RDONLY);
+	if (fd < 0){
+		ED("unable to open file %s", cap_fname);
+		goto fail;
+	}
+	pcap = readpcap(fd);
+	if (pcap == NULL){
+		ED("unable to open file %s", cap_fname);
+		goto fail;
+	}
+	dst->arg = (void*)pcap;
 	return 0;
+fail:
+	if (fd != 0) {
+		close(fd);
+	}
+	if (pcap != NULL) {
+		destroy_pcap_file(&pcap);
+	}
+	return 1;	/* error */
 }
 
 static int
 real_pmode_run(struct _qs *q, struct _cfg *arg)
 {
-	ED("pcap mode: real");
+	fpcap *pcap = (fpcap*)arg->arg;
+	ED("the pcap #of packets = %llu", pcap->ghdr->tot_pkt);
 	return 0;
 }
 
@@ -2015,7 +2062,7 @@ fixed_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
 static int
 fixed_pmode_run(struct _qs *q, struct _cfg *arg)
 {
-	ED("pcap mode: fixed. Chosen bw = %llu", arg->d[0]);
+	
 	return 0;
 }
 
