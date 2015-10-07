@@ -1943,33 +1943,15 @@ static struct _cfg loss_cfg[] = {
 	{ NULL, NULL, NULL, _CFG_END }
 };
 
-/* 
- * Now some functions and data structures for managing pcap 
- * transmission.
- * The set of *_parse functions returns 1 on error (impossible 
- * configuration), 2 on unrecognized configuration and 0 if the 
- * configuration has been parsed without problems.
- * The set of *_run function instead set the correct timing values for 
- * the pkt according to the chosen configuration.
- * 
- * The parse functions set the correct pcap struct inside the queue.
- * After the parse, the pcap is correctly set and can be used in the 
- * run and prod functions.
+/* This function set the correct values inside the pcap struct in the 
+ * queue. It returns the 0 if everything is ok; -1 otherwise.
  */
-static int
-real_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
+static int 
+set_pcap(struct _qs *q)
 {
 	int fd = 0;
 	const char *cap_fname = q->pcap_prod;
 	fpcap *pcap = NULL;
-	
-	if (ac > 2) {
-		goto fail;
-	}
-	
-	if (ac == 2 || strncmp(av[0], "real", 4) != 0) {
-		return 2;	/* unrecognised */
-	}
 	
 	//here we have both ac = 1 and av[0] = "real"
 	/* Now we need to save the pcap struct in order to access it 
@@ -1991,15 +1973,6 @@ real_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
 		goto fail;
 	}
 	q->pcap = pcap;
-	
-	/*
-	 *  setting a default bandwidth in case of single pkt pcap file
-	 */
-	dst->d[0] = DEFAULT_BW;
-	/*
-	 * saving pointer of first pkt for run
-	 */
-	dst->arg = (void*)pcap->list;
 	return 0;
 fail:
 	if (fd != 0) {
@@ -2008,7 +1981,56 @@ fail:
 	if (pcap != NULL) {
 		destroy_pcap_file(&pcap);
 	}
-	return 1;	/* error */
+	return -1;	
+}
+
+/* 
+ * Now some functions and data structures for managing pcap 
+ * transmission.
+ * The set of *_parse functions returns 1 on error (impossible 
+ * configuration), 2 on unrecognized configuration and 0 if the 
+ * configuration has been parsed without problems.
+ * The set of *_run function instead set the correct timing values for 
+ * the pkt according to the chosen configuration.
+ * 
+ * The parse functions set the correct pcap struct inside the queue.
+ * After the parse, the pcap is correctly set and can be used in the 
+ * run and prod functions.
+ */
+static int
+real_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
+{
+	int fd = 0;
+	const char *cap_fname = q->pcap_prod;
+	fpcap *pcap = NULL;
+	
+	if (ac > 2) {
+		return 1;	/* error */
+	}
+	
+	if (ac == 2 || strncmp(av[0], "real", 4) != 0) {
+		return 2;	/* unrecognised */
+	}
+	
+	//here we have both ac = 1 and av[0] = "real"
+	/* Now we need to save the pcap struct in order to access it 
+	 * during the following real_pmode_run() calls. This pcap is 
+	 * saved in the arg field of the dst _cfg.
+	 */
+	if (set_pcap(q) != 0) {
+		return 1;
+	}
+	
+	/*
+	 *  setting a default bandwidth in case of single pkt pcap file
+	 */
+	dst->d[0] = DEFAULT_BW;
+	
+	/*
+	 * saving pointer of first pkt for run
+	 */
+	dst->arg = (void*)q->pcap->list;
+	return 0;
 }
 
 static int
@@ -2019,12 +2041,14 @@ real_pmode_run(struct _qs *q, struct _cfg *arg)
 	uint64_t old_bw = arg->d[0];
 	
 	if(aux->p == NULL) {
-		q->cur_tt = aux->hdr.incl_len*8ULL*TIME_UNITS/old_bw;	
-	} else {
-		q->cur_tt = convert_ts(pcap->ghdr->resolution, aux->p) - q->qt_qout - q->t0;
-		old_bw = aux->hdr.incl_len*8ULL*DEFAULT_BW/q->cur_tt;
-		arg->d[0] = old_bw;
+		q->cur_tt = aux->hdr.incl_len*8ULL*TIME_UNITS/old_bw;
+		return 0;
 	}
+	q->cur_tt = convert_ts(pcap->ghdr->resolution, aux->p) - q->qt_qout - q->t0;
+	old_bw = aux->hdr.incl_len*8ULL/q->cur_tt;
+	arg->d[0] = old_bw;
+	// move on with next pkt
+	arg->arg = (void*)aux->p;
 	return 0;
 }
 
@@ -2069,22 +2093,38 @@ fixed_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
 		return 1;	/* error */
 	}
 	
+	/* like for the real mode case, the fixed_pmode_run() need 
+	 * to access the pkts in the pcap, so we set the pcap field-
+	 */
+	if (set_pcap(q) != 0) {
+		return 1;	/* error */
+	}
+	
 	/* 
 	 * here we have both ac = 2 and av[0] = "real". av[1] contains 
 	 * the desired bandwidth.
-	 */	
+	 */
 	bw = parse_bw(av[ac - 1]);
 	if (bw == U_PARSE_ERR) {
+		destroy_pcap_file(&q->pcap);
 		return 1;
 	}
 	dst->d[0] = bw;
+	
+	/*
+	 * saving pointer of the first pkt for run
+	 */
+	dst->arg = (void*)q->pcap->list;
 	return 0;
 }
 
 static int
 fixed_pmode_run(struct _qs *q, struct _cfg *arg)
 {
-	
+	uint64_t bw = arg->d[0];
+	packet_data *aux = (packet_data*)arg->arg;
+	q->cur_tt = aux->hdr.orig_len*8ULL*TIME_UNITS/bw;
+	arg->arg = (void*)aux->p;
 	return 0;
 }
 
