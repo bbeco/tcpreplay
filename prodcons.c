@@ -301,7 +301,7 @@ struct _qs { /* shared queue */
 	uint64_t	prod_drop;	/* drop packet count */
 	uint64_t	prod_max_gap;	/* rx round duration */
 	const char 	*pcap_prod;	/* pcap file for the producer */
-	fpcap *pcap;			/* the pcap struct */
+	fpcap		*pcap;		/* the pcap struct */
 
 	/* parameters for reading from the netmap port */
 	struct nm_desc *src_port;		/* netmap descriptor */
@@ -786,8 +786,9 @@ pcap_prod(void *_pa)
 {
 	uint64_t need;
 	uint64_t next_ts;
+	struct pipe_args *pa = _pa;
 	struct _qs *q = &pa->q;
-	fpcap *pcap = &q->pcap;	//this has been already open by cmd_apply
+	fpcap *pcap = q->pcap;	//this has been already open by cmd_apply
 	int repeat = 1; //number of copy of the same packets set in queue
 	int insert = 0; //packet counter
 	packet_data *aux = NULL;
@@ -820,9 +821,10 @@ pcap_prod(void *_pa)
 			bandwidth = aux->hdr.incl_len*8ULL*DEFAULT_BW/q->cur_tt;
 		}*/
 						
-	 	ND("cur_tt: %llu", (long long unsigned int)q->cur_tt);
+	 	//ND("cur_tt: %llu", (long long unsigned int)q->cur_tt);
 		q->cur_len = aux->hdr.incl_len;
 		q->c_pmode.run(q, &q->c_pmode);	//computing transmission time
+		NED("pkt: %d\tcur_tt: %llu", insert, q->cur_tt);
 		q->qt_qout += q->cur_tt;
 		q->cur_pkt = (char*)aux->data;
 		enq_pcap(q);
@@ -832,7 +834,7 @@ pcap_prod(void *_pa)
 		aux = aux->p;
 	}
 	q->tail = q->prod_tail;
-	ED("q->tail:%d",(int)q->tail);
+	NED("q->tail:%d",(int)q->tail);
 	return NULL;
 fail:
 	if (q->buf != NULL) {
@@ -1986,6 +1988,12 @@ fail:
 	return -1;	
 }
 
+/* This is a default bandwidth to be used when no bandwidth computation 
+ * is possible; this is the case when the chosen mode is real and the 
+ * capture file contains one packet only.
+ */
+#define DEFAULT_BW 1000000000ULL
+
 /* 
  * Now some functions and data structures for managing pcap 
  * transmission.
@@ -2035,7 +2043,6 @@ real_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
 	return 0;
 }
 
-#define DEFAULT_BW 1000000000ULL
 static int
 real_pmode_run(struct _qs *q, struct _cfg *arg)
 {
@@ -2048,7 +2055,7 @@ real_pmode_run(struct _qs *q, struct _cfg *arg)
 		return 0;
 	}
 	q->cur_tt = convert_ts(pcap->ghdr->resolution, aux->p) - q->qt_qout - q->t0;
-	old_bw = aux->hdr.incl_len*8ULL/q->cur_tt;
+	old_bw = aux->hdr.incl_len*8ULL*TIME_UNITS/q->cur_tt;	//bps
 	arg->d[0] = old_bw;
 	// move on with next pkt
 	arg->arg = (void*)aux->p;
