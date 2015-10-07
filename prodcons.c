@@ -301,6 +301,7 @@ struct _qs { /* shared queue */
 	uint64_t	prod_drop;	/* drop packet count */
 	uint64_t	prod_max_gap;	/* rx round duration */
 	const char 	*pcap_prod;	/* pcap file for the producer */
+	fpcap *pcap;			/* the pcap struct */
 
 	/* parameters for reading from the netmap port */
 	struct nm_desc *src_port;		/* netmap descriptor */
@@ -380,8 +381,6 @@ struct pipe_args {
 
 	struct nm_desc *pa;		/* netmap descriptor */
 	struct nm_desc *pb;
-	
-	fpcap *pcap;			/* the pcap struct */
 
 	struct _qs	q;
 };
@@ -1944,13 +1943,18 @@ static struct _cfg loss_cfg[] = {
 	{ NULL, NULL, NULL, _CFG_END }
 };
 
-/* Now some functions and data structures for managing pcap 
+/* 
+ * Now some functions and data structures for managing pcap 
  * transmission.
  * The set of *_parse functions returns 1 on error (impossible 
  * configuration), 2 on unrecognized configuration and 0 if the 
  * configuration has been parsed without problems.
  * The set of *_run function instead set the correct timing values for 
  * the pkt according to the chosen configuration.
+ * 
+ * The parse functions set the correct pcap struct inside the queue.
+ * After the parse, the pcap is correctly set and can be used in the 
+ * run and prod functions.
  */
 static int
 real_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
@@ -1986,7 +1990,16 @@ real_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
 		ED("unable to open file %s", cap_fname);
 		goto fail;
 	}
-	dst->arg = (void*)pcap;
+	q->pcap = pcap;
+	
+	/*
+	 *  setting a default bandwidth in case of single pkt pcap file
+	 */
+	dst->d[0] = DEFAULT_BW;
+	/*
+	 * saving pointer of first pkt for run
+	 */
+	dst->arg = (void*)pcap->list;
 	return 0;
 fail:
 	if (fd != 0) {
@@ -2001,8 +2014,17 @@ fail:
 static int
 real_pmode_run(struct _qs *q, struct _cfg *arg)
 {
-	fpcap *pcap = (fpcap*)arg->arg;
-	ED("the pcap #of packets = %llu", pcap->ghdr->tot_pkt);
+	fpcap *pcap = q->pcap;
+	packet_data *aux = (packet_data*)arg->arg;
+	uint64_t old_bw = arg->d[0];
+	
+	if(aux->p == NULL) {
+		q->cur_tt = aux->hdr.incl_len*8ULL*TIME_UNITS/old_bw;	
+	} else {
+		q->cur_tt = convert_ts(pcap->ghdr->resolution, aux->p) - q->qt_qout - q->t0;
+		old_bw = aux->hdr.incl_len*8ULL*DEFAULT_BW/q->cur_tt;
+		arg->d[0] = old_bw;
+	}
 	return 0;
 }
 
