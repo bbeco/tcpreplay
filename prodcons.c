@@ -781,24 +781,20 @@ convert_ts (char resolution, packet_data *aux)
 	}
 }
 
-#define DEFAULT_BW 1000000000ULL
 static void *
 pcap_prod(void *_pa)
 {
 	uint64_t need;
 	uint64_t next_ts;
-	uint64_t bandwidth = DEFAULT_BW;//default bandwidth just in case we have only a pkt
-	struct pipe_args *pa = _pa;
-    struct _qs *q = &pa->q;
-	fpcap *pcap = &pa->pcap;
-	int fd = 0;
+	struct _qs *q = &pa->q;
+	fpcap *pcap = &q->pcap;	//this has been already open by cmd_apply
 	int repeat = 1; //number of copy of the same packets set in queue
 	int insert = 0; //packet counter
 	packet_data *aux = NULL;
 	 
 	need = 2*(pcap->ghdr->tot_len + pcap->ghdr->tot_pkt*sizeof(struct q_pkt));	//TODO fix to correct size
-	q->buf =(char*)calloc(1,need);// XXX può bastare questa grandezza?
-	if(q->buf == NULL){
+	q->buf =(char*)calloc(1, need);// XXX può bastare questa grandezza?
+	if(q->buf == NULL) {
 		ED("alloc %ld bytes for queue failed, exiting",(_P64)need);
 		goto fail;
 	}
@@ -839,6 +835,12 @@ pcap_prod(void *_pa)
 	ED("q->tail:%d",(int)q->tail);
 	return NULL;
 fail:
+	if (q->buf != NULL) {
+		free(q->buf);
+	}
+	if (q->pcap != NULL) {
+		destroy_pcap_file(&q->pcap);
+	}
 	nm_close(pa->pb);
 	return (NULL);
 }
@@ -2033,6 +2035,7 @@ real_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
 	return 0;
 }
 
+#define DEFAULT_BW 1000000000ULL
 static int
 real_pmode_run(struct _qs *q, struct _cfg *arg)
 {
@@ -2064,14 +2067,16 @@ fast_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
 	}
 	
 	//here we have both ac = 1 and av[0] = "real"
-	//no further actions needed
+	/* setting pcap field (for prod's purposes) */
+	if (set_pcap(q) != 0) {
+		return 1;	/* error */
+	}	
 	return 0;
 }
 
 static int
 fast_pmode_run(struct _qs *q, struct _cfg *arg)
 {
-	NED("pcap mode: fast");
 	q->cur_tt = 0;
 	return 0;
 }
@@ -2107,7 +2112,7 @@ fixed_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
 	bw = parse_bw(av[ac - 1]);
 	if (bw == U_PARSE_ERR) {
 		destroy_pcap_file(&q->pcap);
-		return 1;
+		return 1;	/* error */
 	}
 	dst->d[0] = bw;
 	
@@ -2121,7 +2126,7 @@ fixed_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
 static int
 fixed_pmode_run(struct _qs *q, struct _cfg *arg)
 {
-	uint64_t bw = arg->d[0];
+	uint64_t bw = arg->d[0];	//bps
 	packet_data *aux = (packet_data*)arg->arg;
 	q->cur_tt = aux->hdr.orig_len*8ULL*TIME_UNITS/bw;
 	arg->arg = (void*)aux->p;
