@@ -890,8 +890,24 @@ cons(void *_pa)
     while (!do_abort) { /* consumer, infinite */
 	struct q_pkt *p;
 
+	ED("Head: %llu", q->head);
 	p = (struct q_pkt *)(q->buf + q->head);
 	__builtin_prefetch (q->buf + p->next);
+	
+	/* Checking if we have reached the tail of the queue */
+	if (p->pktlen == 0) {
+		ED("Restart record FOUND");
+		/* The consumers' clock is restarted just by putting 
+		 * cons_now to 0. Since we use the function set_tns_now
+		 * for simulating the passing of time, we must also 
+		 * reset the start_t with an updated value.
+		 */
+		q->cons_now = 0;
+		set_tns_now(&start_t, 0);
+		q->head = 0;
+		continue;
+	}
+	
 	//ED("p->pt_tx:%llu,q->cons_now:%llu",p->pt_tx/NS_IN_S,q->cons_now/NS_IN_S);
 	if (q->head == q->tail || ts_cmp(p->pt_tx, q->cons_now) > 0) {
 	    /*ND(4,"                 >>>> TXSYNC, pkt not ready yet h %ld t %ld now %ld tx %ld",
@@ -913,11 +929,6 @@ cons(void *_pa)
 		p->pktlen, q->cons_now, p->pt_tx, q->head, q->tail, p->next);
 	/* XXX inefficient but simple */
 	pending++;
-	if (p->pktlen == 0) {
-		ED("Restart record FOUND");
-		q->head = 0;
-		continue;
-	}
 	if (nm_inject(pa->pb, (char *)(p + 1), p->pktlen) == 0 ||
 		pending > q->burst) {
 	    ED("inject failed len %llu now %llu tx %llu h %llu t %llu next %llu",
@@ -930,7 +941,7 @@ cons(void *_pa)
 	q->head = p->next;
 	/* drain packets from the queue */
 	q->rx++;
-	ED("q->rx: %llu", q->rx);
+	NED("q->rx: %llu", q->rx);
 	// XXX barrier
     }
     D("exiting on abort");
