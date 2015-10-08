@@ -757,11 +757,9 @@ static inline int
 enq_pcap (struct _qs* q)
 {
 	uint64_t need;
-	struct q_pkt *p = pkt_at(q,q->prod_tail);
-	//ED("q->prod_tail:%llu",q->prod_tail);
+	struct q_pkt *p = pkt_at(q, q->prod_tail);
 	p->pktlen = q->cur_len;
 	p->pt_qout = q->qt_qout;
-	//ED("siamo nel enq_pcap");
 	p->pt_tx = q->qt_tx; 
 	need = pad(q->cur_len)+sizeof(*p);
 	nm_pkt_copy(q->cur_pkt,(char*)(p+1),q->cur_len);
@@ -833,6 +831,15 @@ pcap_prod(void *_pa)
 		insert++;
 		aux = aux->p;
 	}
+	/* adding a record to tell the cons to reset its clock and start
+	 * the transmission from the beginning.
+	 * Setting the next fiels to value 0 let the cons restart 
+	 * extracting pkt from the head.
+	 */
+	struct q_pkt *pkt = pkt_at(q, q->prod_tail);
+	bzero(pkt, sizeof(*pkt));
+	q->prod_tail += sizeof(*pkt);
+	
 	q->tail = q->prod_tail;
 	NED("q->tail:%d",(int)q->tail);
 	return NULL;
@@ -906,9 +913,14 @@ cons(void *_pa)
 		p->pktlen, q->cons_now, p->pt_tx, q->head, q->tail, p->next);
 	/* XXX inefficient but simple */
 	pending++;
+	if (p->pktlen == 0) {
+		ED("Restart record FOUND");
+		q->head = 0;
+		continue;
+	}
 	if (nm_inject(pa->pb, (char *)(p + 1), p->pktlen) == 0 ||
 		pending > q->burst) {
-	    ED("inject failed len %d now %ld tx %ld h %ld t %ld next %ld",
+	    ED("inject failed len %llu now %llu tx %llu h %llu t %llu next %llu",
 		(int)p->pktlen, q->cons_now, p->pt_tx, q->head, q->tail, p->next);
 	    ioctl(pa->pb->fd, NIOCTXSYNC, 0);
 	    pending = 0;
