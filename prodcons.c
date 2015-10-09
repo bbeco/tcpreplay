@@ -23,6 +23,8 @@
  * SUCH DAMAGE.
  */
 
+#define DO_PCAP_REPLAY /* enable code to do pcap replay */
+
 #if 0 /* COMMENT */
 
 This program implements a bandwidth and delay emulator between two
@@ -137,7 +139,11 @@ prod()
 #define NETMAP_WITH_LIBS
 #include <net/netmap_user.h>
 #include <sys/poll.h>
+
+#ifdef DO_PCAP_REPLAY
 #include "rpcap.h"
+enum my_pcap_mode { PM_NONE, PM_FAST, PM_FIXED, PM_REAL };
+#endif /* DO_PCAP_REPLAY */
 
 int verbose = 0;
 
@@ -289,7 +295,9 @@ struct _qs { /* shared queue */
 	struct _cfg	c_delay;
 	struct _cfg	c_bw;
 	struct _cfg	c_loss;
+#ifdef DO_PCAP_REPLAY
 	struct _cfg	c_pmode;	//handler for pcap transmission mode
+#endif /* DO_PCAP_REPLAY */
 
 	/* producer's fields */
 	uint64_t	tx ALIGN_CACHE;	/* tx counter */
@@ -300,12 +308,14 @@ struct _qs { /* shared queue */
 	uint64_t	prod_now;	/* most recent producer timestamp */
 	uint64_t	prod_drop;	/* drop packet count */
 	uint64_t	prod_max_gap;	/* rx round duration */
-	const char 	*pcap_prod;	/* pcap file for the producer */
+
+#ifdef DO_PCAP_REPLAY
 	fpcap		*pcap;		/* the pcap struct */
+#endif /* DO_PCAP_REPLAY */
 
 	/* parameters for reading from the netmap port */
 	struct nm_desc *src_port;		/* netmap descriptor */
-	const char *	prod_ifname;	/* interface name */
+	const char *	prod_ifname;	/* interface name or pcap file */
 	struct netmap_ring *rxring;	/* current ring being handled */
 	uint32_t	si;		/* ring index */
 	int		burst;
@@ -879,7 +889,7 @@ cons(void *_pa)
      * Otherwise, we set t0 and cons->now to the current time (cons_now 
      * is relative to t0).
      */ 
-    if (q->pcap_prod) {
+    if (q->prod_ifname) {
 	    ED("The capture file is found");
 	    set_tns_now(&start_t, 0);
 	    q->cons_now = 0;
@@ -917,7 +927,7 @@ cons(void *_pa)
 	    ioctl(pa->pb->fd, NIOCTXSYNC, 0); // XXX just in case
 	    pending = 0;
 	    usleep(5);
-	    if (q->pcap_prod) {
+	    if (q->prod_ifname) {
 		set_tns_now(&q->cons_now, start_t);
 	    } else {
 		set_tns_now(&q->cons_now, q->t0);
@@ -952,6 +962,8 @@ cons(void *_pa)
  * main thread for each direction.
  * Allocates memory for the queues, creates the prod() thread,
  * then acts as a cons().
+ * XXX in DO_PCAP_REPLAY read from a file instead of creating
+ * a producer thread.
  */
 static void *
 prodcons_main(void *_a)
@@ -961,6 +973,11 @@ prodcons_main(void *_a)
     uint64_t need;
 
     setaffinity(a->cons_core);
+
+    if (q->c_pmode.parse) {
+	D("operating in pcap streaming mode ");
+	return NULL;
+    }
     set_tns_now(&q->t0, 0); /* starting reference */
 
     a->pa = nm_open(q->prod_ifname, NULL, NETMAP_NO_TX_POLL, NULL);
@@ -1023,7 +1040,7 @@ pcap_prodcons_main(void *_a)
 {
     struct pipe_args *a = _a;
     struct _qs *q = &a->q;
-    const char *cap_fname = q->pcap_prod;
+    const char *cap_fname = q->prod_ifname;
     fpcap *pcap = NULL;
     int fd = 0;
 
@@ -1076,7 +1093,7 @@ usage(void)
 {
 	fprintf(stderr,
 	    "usage: prodcons [-v] [-D delay] [-B bps] [-L loss] [-Q qsize] \n"
-	    "\t[-b burst] [-w wait_time] -i ifa -i ifb\n");
+	    "\t[-b burst] [-w wait_time] [-m fast|real|fixed...] -i ifa-or-pcap-file -i ifb\n");
 	exit(1);
 }
 
@@ -1212,7 +1229,7 @@ main(int argc, char **argv)
 
 #define	N_OPTS	2
 	struct pipe_args bp[N_OPTS];
-	const char *d[N_OPTS], *b[N_OPTS], *l[N_OPTS], *q[N_OPTS], *ifname[N_OPTS], *p[N_OPTS], *m[N_OPTS]; //p stands for file pcap, XXX 2 just in case?
+	const char *d[N_OPTS], *b[N_OPTS], *l[N_OPTS], *q[N_OPTS], *ifname[N_OPTS], *m[N_OPTS];
 	int cores[4] = { 2, 8, 4, 10 }; /* default values */
 	
 
@@ -1248,10 +1265,9 @@ main(int argc, char **argv)
 	// i	interface name (two mandatory)
 	// v	verbose
 	// b	batch size
-	// p 	file pcap
 	// m	pcap transmission mode (real/fast/fixed)
 	
-	while ( (ch = getopt(argc, argv, "B:C:D:L:Q:b:ci:vw:p:m:")) != -1) {
+	while ( (ch = getopt(argc, argv, "B:C:D:L:Q:b:ci:vw:m:")) != -1) {
 		switch (ch) {
 		default:
 			D("bad option %c %s", ch, optarg);
@@ -1318,9 +1334,6 @@ main(int argc, char **argv)
 		case 'w':
 			bp[0].wait_link = atoi(optarg);
 			break;
-		case 'p':
-			add_to(p, N_OPTS, optarg, " -p too many times");
-			break;
 		case 'm':
 			add_to(m, N_OPTS, optarg, " -m too many times");
 			break;
@@ -1355,10 +1368,6 @@ main(int argc, char **argv)
 	bp[1] = bp[0]; /* copy parameters, but swap interfaces */
 	bp[0].q.prod_ifname = bp[1].q.cons_ifname = ifname[0];
 	bp[1].q.prod_ifname = bp[0].q.cons_ifname = ifname[1];
-	/* copy pcap file name */
-	bp[0].q.pcap_prod = p[0];
-	bp[1].q.pcap_prod = p[1] == NULL ? p[0] : p[1];
-	ED("il file è %s",p[0]);
 	/* assign cores. prod and cons work better if on the same HT */
 	bp[0].cons_core = cores[0];
 	bp[0].prod_core = cores[1];
@@ -1400,7 +1409,8 @@ main(int argc, char **argv)
 		ED("qsize= 0 is not valid, set to 50k");
 		bp[1].q.qsize = 50000;
 	}
-	if(!p[0]){
+// XXX go straight to prodcons main
+	if(1){
 		pthread_create(&bp[0].cons_tid, NULL, prodcons_main, (void*)&bp[0]);
 		pthread_create(&bp[1].cons_tid, NULL, prodcons_main, (void*)&bp[1]);
 	} else {
@@ -1968,6 +1978,10 @@ static struct _cfg loss_cfg[] = {
 	{ NULL, NULL, NULL, _CFG_END }
 };
 
+/*
+ * support functions for tcpreplay operation.
+ */
+
 /* This function set the correct values inside the pcap struct in the 
  * queue. It returns the 0 if everything is ok; -1 otherwise.
  */
@@ -1975,7 +1989,7 @@ static int
 set_pcap(struct _qs *q)
 {
 	int fd = 0;
-	const char *cap_fname = q->pcap_prod;
+	const char *cap_fname = q->prod_ifname;
 	fpcap *pcap = NULL;
 	
 	//here we have both ac = 1 and av[0] = "real"
@@ -2029,132 +2043,84 @@ fail:
  * run and prod functions.
  */
 static int
-real_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
-{
-	
-	if (ac > 2) {
-		return 1;	/* error */
-	}
-	
-	if (ac == 2 || strncmp(av[0], "real", 4) != 0) {
-		return 2;	/* unrecognised */
-	}
-	
-	//here we have both ac = 1 and av[0] = "real"
-	/* Now we need to save the pcap struct in order to access it 
-	 * during the following real_pmode_run() calls. This pcap is 
-	 * saved in the arg field of the dst _cfg.
-	 */
-	if (set_pcap(q) != 0) {
-		return 1;
-	}
-	
-	/*
-	 *  setting a default bandwidth in case of single pkt pcap file
-	 */
-	dst->d[0] = DEFAULT_BW;
-	
-	/*
-	 * saving pointer of first pkt for run
-	 */
-	dst->arg = (void*)q->pcap->list;
-	return 0;
-}
-
-static int
-real_pmode_run(struct _qs *q, struct _cfg *arg)
+pmode_run(struct _qs *q, struct _cfg *arg)
 {
 	fpcap *pcap = q->pcap;
 	packet_data *aux = (packet_data*)arg->arg;
-	uint64_t old_bw = arg->d[0];
+	uint64_t bw = arg->d[0];
 	
-	if(aux->p == NULL) {
-		q->cur_tt = aux->hdr.incl_len*8ULL*TIME_UNITS/old_bw;
-		return 0;
+    switch (arg->d[1]) { /* mode */
+    case PM_REAL:
+	/* in real mode, update the 'bw' according to the packet size.
+	 * XXX this is probably wrong and backwards.
+	 */
+	if(aux->p == NULL) { // XXX what is this ?
+		q->cur_tt = aux->hdr.incl_len*8ULL*TIME_UNITS/bw;
+		break;
 	}
 	q->cur_tt = convert_ts(pcap->ghdr->resolution, aux->p) - q->qt_qout - q->t0;
-	old_bw = aux->hdr.incl_len*8ULL*TIME_UNITS/q->cur_tt;	//bps
-	arg->d[0] = old_bw;
+	bw = aux->hdr.incl_len*8ULL*TIME_UNITS/q->cur_tt;	//bps
+	arg->d[0] = bw;
 	// move on with next pkt
 	arg->arg = (void*)aux->p;
-	return 0;
-}
+	break;
 
-static int
-fast_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
-{
-	if (ac > 2) {
-		return 1;	/* error */
-	}
-	
-	if (ac == 2 || strncmp(av[0], "fast", 4) != 0) {
-		return 2;	/* unrecognised */
-	}
-	
-	//here we have both ac = 1 and av[0] = "real"
-	/* setting pcap field (for prod's purposes) */
-	if (set_pcap(q) != 0) {
-		return 1;	/* error */
-	}	
-	return 0;
-}
-
-static int
-fast_pmode_run(struct _qs *q, struct _cfg *arg)
-{
+    case PM_FAST:
 	q->cur_tt = 0;
+	break;
+
+    case PM_FIXED:
+	q->cur_tt = aux->hdr.orig_len*8ULL*TIME_UNITS/bw;
+	arg->arg = (void*)aux->p;
 	return 0;
+    }
+    return 0;
 }
 
+
+/*
+ * depending on the argument we can run in fixed, real or fast mode.
+ * fixed means fixed bandwidth, real uses timestamps from the file,
+ * fast runs as fast as possible.
+ */
 static int
-fixed_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
+pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
 {
 	uint64_t bw;
-	
-	if (ac > 2) {
+	int mode = PM_NONE;
+
+	if (!strncmp(av[0], "fixed", 5))
+		mode = PM_FIXED;
+	else if (!strncmp(av[0], "real", 4))
+		mode = PM_REAL;
+	else if (!strncmp(av[0], "fast", 4))
+		mode = PM_FAST;
+	else
+		return 2; /* unrecognised */
+	D("mode is %s", av[0]);
+	if (ac > 1 && mode != PM_FIXED) {
 		return 1;	/* error */
 	}
-	
-	if (ac == 1) {
-		return 2;	/* unrecognized */
+	bw = parse_bw(av[ac - 1]);
+	if (bw == U_PARSE_ERR) {
+		return 1; /* error */
 	}
-	
-	if (ac > 1 && strncmp(av[0], "fixed", 5) != 0) {
-		return 1;	/* error */
-	}
-	
+	if (mode == PM_REAL)
+		bw = DEFAULT_BW;
 	/* like for the real mode case, the fixed_pmode_run() need 
 	 * to access the pkts in the pcap, so we set the pcap field-
 	 */
 	if (set_pcap(q) != 0) {
 		return 1;	/* error */
 	}
-	
-	/* 
-	 * here we have both ac = 2 and av[0] = "real". av[1] contains 
-	 * the desired bandwidth.
-	 */
-	bw = parse_bw(av[ac - 1]);
-	if (bw == U_PARSE_ERR) {
-		destroy_pcap_file(&q->pcap);
-		return 1;	/* error */
-	}
 	dst->d[0] = bw;
-	
+	dst->d[1] = mode;
+
 	/*
 	 * saving pointer of the first pkt for run
+	 * XXX was not done for 'fast' ?
 	 */
 	dst->arg = (void*)q->pcap->list;
-	return 0;
-}
-
-static int
-fixed_pmode_run(struct _qs *q, struct _cfg *arg)
-{
-	uint64_t bw = arg->d[0];	//bps
-	packet_data *aux = (packet_data*)arg->arg;
-	q->cur_tt = aux->hdr.orig_len*8ULL*TIME_UNITS/bw;
-	arg->arg = (void*)aux->p;
 	return 0;
 }
 
@@ -2162,8 +2128,6 @@ fixed_pmode_run(struct _qs *q, struct _cfg *arg)
  * The next struct contains all the possible mode for a cap transmission
  */
 static struct _cfg pmode_cfg[] = {
-	{ real_pmode_parse, real_pmode_run, "-m <mode>[,<value>]", _CFG_END },
-	{ fast_pmode_parse, fast_pmode_run, "-m <mode>[,<value>]", _CFG_END },
-	{ fixed_pmode_parse, fixed_pmode_run, "-m <mode>[,<value>]", _CFG_END },
+	{ pmode_parse, pmode_run, "-m <mode>[,<value>]", _CFG_END },
 	{ NULL, NULL, NULL, _CFG_END }
 };
