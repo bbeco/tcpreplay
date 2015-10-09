@@ -823,6 +823,7 @@ pcap_prod(void *_pa)
 	ED("Starting at time %llu", (long long unsigned int)q->t0);
 	q->qt_qout = q->prod_now = 0;
 	q->qt_tx = 0;
+	q->c_pmode.arg = q->pcap->list; /* first packet */
 	while (insert < repeat*h->tot_pkt && !do_abort){
 #if 0 /* XXX test ? */
 		if(aux->p == NULL){
@@ -836,6 +837,7 @@ pcap_prod(void *_pa)
 						
 	 	//ND("cur_tt: %llu", (long long unsigned int)q->cur_tt);
 		q->cur_len = aux->hdr.incl_len;
+		// XXX could be done inline ?
 		q->c_pmode.run(q, &q->c_pmode);	//computing transmission time
 		NED("pkt: %d\tcur_tt: %llu", insert, q->cur_tt);
 		q->qt_qout += q->cur_tt;
@@ -857,6 +859,7 @@ pcap_prod(void *_pa)
 	
 	q->tail = q->prod_tail;
 	NED("q->tail:%d",(int)q->tail);
+
 	return NULL;
 fail:
 	if (q->buf != NULL) {
@@ -971,7 +974,7 @@ pcap_prodcons_main(void *_a)
 
     a->pb = nm_open(q->cons_ifname, NULL, 0, NULL);
     if (a->pb == NULL) {
-	ED("cannot open %s", q->cons_ifname);
+	ED("cannot open netmap on %s", q->cons_ifname);
 	return NULL;
     }
     if (cap_fname == NULL) {
@@ -1415,8 +1418,10 @@ main(int argc, char **argv)
 		ED("qsize= 0 is not valid, set to 50k");
 		bp[1].q.qsize = 50000;
 	}
-// XXX go straight to prodcons main
+
 	pthread_create(&bp[0].cons_tid, NULL, prodcons_main, (void*)&bp[0]);
+    // XXX do not run the second threads in replay mode
+    if (!bp[0].q.c_pmode.parse)
 	pthread_create(&bp[1].cons_tid, NULL, prodcons_main, (void*)&bp[1]);
 	signal(SIGINT, sigint_h);
 	sleep(1);
@@ -2089,43 +2094,28 @@ pmode_run(struct _qs *q, struct _cfg *arg)
 static int
 pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
 {
-	uint64_t bw;
+	uint64_t bw = DEFAULT_BW;
 	int mode = PM_NONE;
 
-	if (!strncmp(av[0], "fixed", 5))
+	if (!strncmp(av[0], "fixed", 5)) {
 		mode = PM_FIXED;
-	else if (!strncmp(av[0], "real", 4))
+	} else if (!strncmp(av[0], "real", 4)) {
 		mode = PM_REAL;
-	else if (!strncmp(av[0], "fast", 4))
+	} else if (!strncmp(av[0], "fast", 4)) {
 		mode = PM_FAST;
-	else
+	} else {
 		return 2; /* unrecognised */
-	D("mode is %s", av[0]);
-	if (ac == 1) {
-		return  (mode == PM_FIXED) ? 1 /* err */ : 0 /* ok */;
 	}
-	bw = parse_bw(av[ac - 1]);
-	if (bw == U_PARSE_ERR) {
-		return 1; /* error */
+	D("mode is %s %s", av[0], av[1]);
+	if (ac > 1) {
+		if (mode != PM_FIXED)
+			return 1; /* error */
+		bw = parse_bw(av[ac - 1]);
+		if (bw == U_PARSE_ERR)
+			return 1; /* error */
 	}
-	if (mode == PM_REAL)
-		bw = DEFAULT_BW;
-#if 0
-	/* like for the real mode case, the fixed_pmode_run() need 
-	 * to access the pkts in the pcap, so we set the pcap field-
-	 */
-	if (set_pcap(q) != 0) {
-		return 1;	/* error */
-	}
-#endif
 	dst->d[0] = bw;
 	dst->d[1] = mode;
-
-	/*
-	 * saving pointer of the first pkt for run
-	 * XXX was not done for 'fast' ?
-	 */
-	dst->arg = (void*)q->pcap->list;
 	return 0;
 }
 
