@@ -114,8 +114,8 @@ struct pcap_file {
     packet_data *end;
 };
 
-struct pcap_file *readpcap(int file);
-void destroy_pcap_file(struct pcap_file **file);
+struct pcap_file *readpcap(FILE * file);
+void destroy_pcap_list(struct pcap_file **file);
 
 
 #endif // RCAP_H_INCLUDED

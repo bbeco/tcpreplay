@@ -862,9 +862,6 @@ fail:
 	if (q->buf != NULL) {
 		free(q->buf);
 	}
-	if (q->pcap != NULL) {
-		destroy_pcap_file(&q->pcap);
-	}
 	nm_close(pa->pb);
 	return (NULL);
 }
@@ -970,38 +967,40 @@ pcap_prodcons_main(void *_a)
     struct pipe_args *a = _a;
     struct _qs *q = &a->q;
     const char *cap_fname = q->prod_ifname;
-    struct pcap_file *pcap = NULL;
-    int fd = 0;
+    FILE *fp = NULL;
 
     a->pb = nm_open(q->cons_ifname, NULL, 0, NULL);
     if (a->pb == NULL) {
 	ED("cannot open %s", q->cons_ifname);
 	return NULL;
     }
-	if (cap_fname == NULL) {
-		goto fail;
-	}	
-	fd = open(cap_fname, O_RDONLY);
-	if (fd < 0){
-		ED("unable to open file %s", cap_fname);
-		goto fail;
-	}
-	pcap = readpcap(fd);
-	if (pcap == NULL){
-		ED("unable to open file %s", cap_fname);
-		goto fail;
-	}
+    if (cap_fname == NULL) {
+	goto fail;
+    }	
+    fp = fopen(cap_fname, "r");
+    if (!fp){
+	ED("unable to open file %s", cap_fname);
+	goto fail;
+    }
+    q->pcap = readpcap(fp);
+    fclose(fp);
+    fp = NULL;
+    if (q->pcap == NULL){
+	ED("unable to open file %s", cap_fname);
+	goto fail;
+    }
     pcap_prod((void*)a);
+    destroy_pcap_list(&q->pcap);
     /* continue as cons() */
     cons((void*)a);
     D("exiting on abort");
 fail:
-	if (fd != 0) {
-		close(fd);
-	}
-	if (pcap != NULL) {
-		destroy_pcap_file(&pcap);
-	}
+    if (fp) {
+	    fclose(fp);
+    }
+    if (q->pcap != NULL) {
+	destroy_pcap_list(&q->pcap);
+    }
     return NULL;
 }
 
@@ -1983,6 +1982,7 @@ static struct _cfg loss_cfg[] = {
  * support functions for tcpreplay operation.
  */
 
+#if 0
 /* This function set the correct values inside the pcap struct in the 
  * queue. It returns the 0 if everything is ok; -1 otherwise.
  */
@@ -2023,6 +2023,7 @@ fail:
 	}
 	return -1;	
 }
+#endif
 
 /* This is a default bandwidth to be used when no bandwidth computation 
  * is possible; this is the case when the chosen mode is real and the 
@@ -2108,12 +2109,14 @@ pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
 	}
 	if (mode == PM_REAL)
 		bw = DEFAULT_BW;
+#if 0
 	/* like for the real mode case, the fixed_pmode_run() need 
 	 * to access the pkts in the pcap, so we set the pcap field-
 	 */
 	if (set_pcap(q) != 0) {
 		return 1;	/* error */
 	}
+#endif
 	dst->d[0] = bw;
 	dst->d[1] = mode;
 

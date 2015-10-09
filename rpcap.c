@@ -5,6 +5,10 @@
 #include <fcntl.h>
 #include "rpcap.h"
 
+/*
+ * a simple library to read from a pcap file into a list
+ * of packets in memory.
+ */
 #ifdef TEST_MODE
 
 int main(int argc, char *argv[])
@@ -15,7 +19,7 @@ int main(int argc, char *argv[])
     }
     struct pcap_file *fpc = readpcap(file);
     printf("Hello world!\n");
-    destroy_pcap_file(&fpc);
+    destroy_pcap_list(&fpc);
     return 0;
 }
 
@@ -47,8 +51,8 @@ struct pcap_file *new_fpcap(void)
 }
 
 
-// Destroy a pcap file
-void destroy_pcap_file(struct pcap_file **file)
+// Destroy a pcap list
+void destroy_pcap_list(struct pcap_file **file)
 {
     struct pcap_file *f = file ? *file : NULL;
     packet_data *tmp;
@@ -115,11 +119,11 @@ void insert_pkt(struct pcap_file *file, packet_data *pkt)
 
 // Read file pcap's header info and swap the content if the file has a byte
 // ordering different than system byte ordering
-int read_next_info(int file, void *_data, int size, char swap)
+int read_next_info(FILE *fp, void *_data, int size, char swap)
 {
     int i;
     unsigned char tmp, *data = _data;
-    i = read(file, data, size);
+    i = fread(data, 1, size, fp);
     if (i != size) {
         //fprintf("Error reading file pcap header\n");
         return i;
@@ -136,7 +140,7 @@ int read_next_info(int file, void *_data, int size, char swap)
 
 // Allocate a new pcap file structure, read infos from file and return
 // structure's address
-struct pcap_file *readpcap(int file)
+struct pcap_file *readpcap(FILE *fp)
 {
     struct pcap_file *filepcap = new_fpcap();
     packet_data *pkt;
@@ -150,7 +154,7 @@ struct pcap_file *readpcap(int file)
 
     h = filepcap->ghdr = (pcap_hdr_t *)calloc(1, sizeof(pcap_hdr_t));
 
-    ret = read(file, &(h->magic_number), L4);
+    ret = fread(&(h->magic_number), 1, L4, fp);
     if (ret != L4) {
         goto fail;
     }
@@ -175,19 +179,19 @@ struct pcap_file *readpcap(int file)
             goto fail;
     }
 
-    if (read_next_info(file, &(h->version_major), L2, swap) != L2 ||
-        read_next_info(file, &(h->version_minor), L2, swap) != L2 ||
-        read_next_info(file, &(h->thiszone), L4, swap) != L4 ||
-        read_next_info(file, &(h->stampacc), L4, swap) != L4 ||
-        read_next_info(file, &(h->snaplen), L4, swap) != L4 ||
-        read_next_info(file, &(h->network), L4, swap) != L4) {
+    if (read_next_info(fp, &(h->version_major), L2, swap) != L2 ||
+        read_next_info(fp, &(h->version_minor), L2, swap) != L2 ||
+        read_next_info(fp, &(h->thiszone), L4, swap) != L4 ||
+        read_next_info(fp, &(h->stampacc), L4, swap) != L4 ||
+        read_next_info(fp, &(h->snaplen), L4, swap) != L4 ||
+        read_next_info(fp, &(h->network), L4, swap) != L4) {
             goto fail;
     }
     while(1) {
         pkt = new_packet_data();
 	ph = &pkt->hdr;
 
-        ret = read_next_info(file, &(ph->ts_sec), L4, swap);
+        ret = read_next_info(fp, &(ph->ts_sec), L4, swap);
         if (ret != L4) {
             if (ret == 0) {
                 // If no elements have been inserted in the data structure
@@ -198,14 +202,14 @@ struct pcap_file *readpcap(int file)
             }
             goto fail;
         }
-        if (read_next_info(file, &(ph->ts_usec), L4, swap) != L4 ||
-            read_next_info(file, &(ph->incl_len), L4, swap) != L4 ||
-            read_next_info(file, &(ph->orig_len), L4, swap) != L4) {
+        if (read_next_info(fp, &(ph->ts_usec), L4, swap) != L4 ||
+            read_next_info(fp, &(ph->incl_len), L4, swap) != L4 ||
+            read_next_info(fp, &(ph->orig_len), L4, swap) != L4) {
                 goto fail;
         }
 	/* XXX we only grab the captured length, but actual lenght might be higher */
         pkt->data = (unsigned char *)malloc(ph->incl_len);
-        if (read(file, pkt->data, ph->incl_len) < ph->incl_len) {
+        if (fread(pkt->data, 1, ph->incl_len, fp) < ph->incl_len) {
             goto fail;
         }
         insert_pkt(filepcap, pkt);
@@ -217,6 +221,6 @@ struct pcap_file *readpcap(int file)
 
 fail:
     fprintf(stderr, "Error reading pcap file\n");
-    destroy_pcap_file(&filepcap);
+    destroy_pcap_list(&filepcap);
     return NULL;
 }
