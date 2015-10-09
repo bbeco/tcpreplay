@@ -1022,7 +1022,7 @@ prodcons_main(void *_a)
 
     if (q->c_pmode.parse) {
 	D("operating in pcap streaming mode ");
-	return pcap_prodcons_main(q);
+	return pcap_prodcons_main(a);
     }
     set_tns_now(&q->t0, 0); /* starting reference */
 
@@ -1185,6 +1185,7 @@ cmd_apply(const struct _cfg *a, const char *arg, struct _qs *q, struct _cfg *dst
 		x.arg = NULL;
 		x.arg_len = 0;
 		bzero(&x.d, sizeof(x.d));
+D("apply %s to %s", av[0], errmsg);
 		ret = x.parse(q, &x, ac, av);
 		if (ret == 2) /* not recognised */
 			continue;
@@ -2100,8 +2101,8 @@ pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
 	else
 		return 2; /* unrecognised */
 	D("mode is %s", av[0]);
-	if (ac > 1 && mode != PM_FIXED) {
-		return 1;	/* error */
+	if (ac == 1) {
+		return  (mode == PM_FIXED) ? 1 /* err */ : 0 /* ok */;
 	}
 	bw = parse_bw(av[ac - 1]);
 	if (bw == U_PARSE_ERR) {
