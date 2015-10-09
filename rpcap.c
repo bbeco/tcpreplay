@@ -4,8 +4,10 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "rpcap.h"
-/*
-int main()
+
+#ifdef TEST_MODE
+
+int main(int argc, char *argv[])
 {
     int file = open("file.cap", O_RDONLY);
     if (file < 0) {
@@ -24,12 +26,14 @@ int main()
    - packet payload
    - Pointer to the next packet
 */
-/*struct pkt_list_element {
+struct pkt_list_element {
     pcaprec_hdr_t hdr;
     unsigned char *data;
     struct pkt_list_element* p;
 };
-*/
+
+#endif /* TEST_MODE */
+
 packet_data *new_packet_data() {
     packet_data *pkt = (packet_data *)calloc(sizeof(packet_data), 1);
     return pkt;

@@ -137,7 +137,7 @@ prod()
 #define NETMAP_WITH_LIBS
 #include <net/netmap_user.h>
 #include <sys/poll.h>
-#include "custom_libpcap/rpcap.h"
+#include "rpcap.h"
 
 int verbose = 0;
 
@@ -783,7 +783,6 @@ static void *
 pcap_prod(void *_pa)
 {
 	uint64_t need;
-	uint64_t next_ts;
 	struct pipe_args *pa = _pa;
 	struct _qs *q = &pa->q;
 	fpcap *pcap = q->pcap;	//this has been already open by cmd_apply
@@ -890,7 +889,7 @@ cons(void *_pa)
     while (!do_abort) { /* consumer, infinite */
 	struct q_pkt *p;
 
-	ED("Head: %llu", q->head);
+	ED("Head: %ld", (long)q->head);
 	p = (struct q_pkt *)(q->buf + q->head);
 	__builtin_prefetch (q->buf + p->next);
 	
@@ -931,8 +930,8 @@ cons(void *_pa)
 	pending++;
 	if (nm_inject(pa->pb, (char *)(p + 1), p->pktlen) == 0 ||
 		pending > q->burst) {
-	    ED("inject failed len %llu now %llu tx %llu h %llu t %llu next %llu",
-		(int)p->pktlen, q->cons_now, p->pt_tx, q->head, q->tail, p->next);
+	    ED("inject failed len %ld now %ld tx %ld h %ld t %ld next %ld",
+		(long)p->pktlen, (long)q->cons_now, (long)p->pt_tx, (long)q->head, (long)q->tail, (long)p->next);
 	    ioctl(pa->pb->fd, NIOCTXSYNC, 0);
 	    pending = 0;
 	    continue;
@@ -1027,7 +1026,6 @@ pcap_prodcons_main(void *_a)
     const char *cap_fname = q->pcap_prod;
     fpcap *pcap = NULL;
     int fd = 0;
-    uint64_t need;
 
     setaffinity(a->cons_core);
     a->pb = nm_open(q->cons_ifname, NULL, NETMAP_NO_TX_POLL,NULL);
@@ -2033,9 +2031,6 @@ fail:
 static int
 real_pmode_parse(struct _qs *q, struct _cfg *dst, int ac, char *av[])
 {
-	int fd = 0;
-	const char *cap_fname = q->pcap_prod;
-	fpcap *pcap = NULL;
 	
 	if (ac > 2) {
 		return 1;	/* error */
