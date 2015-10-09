@@ -958,6 +958,47 @@ cons(void *_pa)
 }
 
 
+static void *
+pcap_prodcons_main(void *_a)
+{
+    struct pipe_args *a = _a;
+    struct _qs *q = &a->q;
+    const char *cap_fname = q->prod_ifname;
+    fpcap *pcap = NULL;
+    int fd = 0;
+
+    a->pb = nm_open(q->cons_ifname, NULL, 0, NULL);
+    if (a->pb == NULL) {
+	ED("cannot open %s", q->cons_ifname);
+	return NULL;
+    }
+	if (cap_fname == NULL) {
+		goto fail;
+	}	
+	fd = open(cap_fname, O_RDONLY);
+	if (fd < 0){
+		ED("unable to open file %s", cap_fname);
+		goto fail;
+	}
+	pcap = readpcap(fd);
+	if (pcap == NULL){
+		ED("unable to open file %s", cap_fname);
+		goto fail;
+	}
+    pcap_prod((void*)a);
+    /* continue as cons() */
+    cons((void*)a);
+    D("exiting on abort");
+fail:
+	if (fd != 0) {
+		close(fd);
+	}
+	if (pcap != NULL) {
+		destroy_pcap_file(&pcap);
+	}
+    return NULL;
+}
+
 /*
  * main thread for each direction.
  * Allocates memory for the queues, creates the prod() thread,
@@ -976,7 +1017,7 @@ prodcons_main(void *_a)
 
     if (q->c_pmode.parse) {
 	D("operating in pcap streaming mode ");
-	return NULL;
+	return pcap_prodcons_main(q);
     }
     set_tns_now(&q->t0, 0); /* starting reference */
 
@@ -1035,47 +1076,6 @@ prodcons_main(void *_a)
     return NULL;
 }
 
-static void *
-pcap_prodcons_main(void *_a)
-{
-    struct pipe_args *a = _a;
-    struct _qs *q = &a->q;
-    const char *cap_fname = q->prod_ifname;
-    fpcap *pcap = NULL;
-    int fd = 0;
-
-    setaffinity(a->cons_core);
-    a->pb = nm_open(q->cons_ifname, NULL, NETMAP_NO_TX_POLL,NULL);
-    if (a->pb == NULL) {
-	ED("cannot open %s", q->cons_ifname);
-	return NULL;
-    }
-	if (cap_fname == NULL) {
-		goto fail;
-	}	
-	fd = open(cap_fname, O_RDONLY);
-	if (fd < 0){
-		ED("unable to open file %s", cap_fname);
-		goto fail;
-	}
-	pcap = readpcap(fd);
-	if (pcap == NULL){
-		ED("unable to open file %s", cap_fname);
-		goto fail;
-	}
-    pcap_prod((void*)a);
-    /* continue as cons() */
-    cons((void*)a);
-    D("exiting on abort");
-fail:
-	if (fd != 0) {
-		close(fd);
-	}
-	if (pcap != NULL) {
-		destroy_pcap_file(&pcap);
-	}
-    return NULL;
-}
 
 
 static void
@@ -1410,13 +1410,8 @@ main(int argc, char **argv)
 		bp[1].q.qsize = 50000;
 	}
 // XXX go straight to prodcons main
-	if(1){
-		pthread_create(&bp[0].cons_tid, NULL, prodcons_main, (void*)&bp[0]);
-		pthread_create(&bp[1].cons_tid, NULL, prodcons_main, (void*)&bp[1]);
-	} else {
-		pthread_create(&bp[0].cons_tid, NULL, pcap_prodcons_main, (void*)&bp[0]);
-		pthread_create(&bp[1].cons_tid, NULL, pcap_prodcons_main, (void*)&bp[1]);
-	}
+	pthread_create(&bp[0].cons_tid, NULL, prodcons_main, (void*)&bp[0]);
+	pthread_create(&bp[1].cons_tid, NULL, prodcons_main, (void*)&bp[1]);
 	signal(SIGINT, sigint_h);
 	sleep(1);
 	while (!do_abort) {
