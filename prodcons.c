@@ -796,9 +796,9 @@ static void *
 pcap_prod(void *_pa)
 {
 	uint64_t need;
-	uint64_t bw = q->c_pmode.d[0];
 	struct pipe_args *pa = _pa;
 	struct _qs *q = &pa->q;
+	double bw = q->c_pmode.d[0];
 	struct pcap_file *pcap = q->pcap;	//this has been already open by cmd_apply
 	int repeat = 1; //number of copy of the same packets set in queue
 	int insert = 0; //packet counter
@@ -821,11 +821,11 @@ pcap_prod(void *_pa)
 	 * Setting t0 to the capture time
 	 */
 	//q->t0 = convert_ts(h->resolution, aux);
-	ED("Starting at time %llu", (long long unsigned int)q->t0);
 	set_tns_now(&q->prod_now,q->t0);
+	ED("Starting at time %llu", (long long unsigned int)q->t0);
+	
 	//q->qt_qout = q->prod_now = 0;
 	//q->qt_tx = 0;
-	q->c_pmode.arg = q->pcap->list; /* first packet */
 	while (insert < repeat*h->tot_pkt && !do_abort){
 		q->cur_len = aux->hdr.incl_len;
 		
@@ -838,21 +838,25 @@ pcap_prod(void *_pa)
 		/* in real mode, update the 'bw' according to the packet size.
 		 * XXX this is probably wrong and backwards.
 		 */
-		if(aux->p == NULL) { 
-			bw = (h->tot_len - aux->hdr.incl_len)*8ULL/(q->pt_tx*TIME_UNITS); /* average bps */
-			q->cur_tt = aux->hdr.incl_len*8ULL*TIME_UNITS/bw;
+			if(aux->p == NULL) { 
+				ED("q->qt_tx%llu",q->qt_tx);
+				bw = TIME_UNITS*(h->tot_len - aux->hdr.incl_len)*8ULL/(q->qt_tx); /* average bps */
+				ED("ultimo caso bw:%llu",bw);
+				q->cur_tt = aux->hdr.incl_len*8ULL*TIME_UNITS/bw;
+				
+				break;
+			}
+			q->cur_tt = convert_ts(h->resolution, aux->p) - convert_ts(h->resolution,aux);
 			break;
-		}
-		q->cur_tt = convert_ts(h->resolution, aux->p) - q->qt_qout - q->t0;
-		break;
 
 		case PM_FAST:
-		q->cur_tt = 0;
-		break;
+			q->cur_tt = 0;
+			break;
 
 		case PM_FIXED:
-		q->cur_tt = aux->hdr.orig_len*8ULL*TIME_UNITS/bw;
-		break;
+			q->cur_tt = aux->hdr.orig_len*8ULL*TIME_UNITS/bw;
+			break;
+		}
 		q->qt_qout += q->cur_tt;
 		q->cur_pkt = (char*)aux->data;
 		enq_pcap(q);
@@ -870,6 +874,7 @@ pcap_prod(void *_pa)
 	bzero(pkt, sizeof(*pkt));
 	q->prod_tail += sizeof(*pkt);
 	pkt->pt_qout = q->qt_qout + q->cur_tt;
+	pkt->next = q->prod_tail;
 	q->tail = q->prod_tail;
 	NED("q->tail:%d",(int)q->tail);
 
@@ -907,23 +912,25 @@ cons(void *_pa)
     while (!do_abort) { /* consumer, infinite */
 	struct q_pkt *p;
 
-	ED("Head: %ld", (long)q->head);
-	p = (struct q_pkt *)(q->buf + q->head);
+	//ED("Head: %ld", (long)q->head);
+
+	p = pkt_at(q,q->head);
 	__builtin_prefetch (q->buf + p->next);
-	
-	/* Checking if we have reached the tail of the queue */
-	if (p->pktlen == 0) {
+	if (p->next == q->tail && q->c_pmode.parse) {
 		ED("Restart record FOUND");
 		/* The consumers' clock is restarted just by putting 
 		 * cons_now to 0. Since we use the function set_tns_now
 		 * for simulating the passing of time, we must also 
 		 * reset the start_t with an updated value.
 		 */
-		q->cons_now = 0;
-		set_tns_now(&start_t, 0);
+		set_tns_now(&q->t0,0); 
+		set_tns_now(&q->cons_now, q->t0);
 		q->head = 0;
 		continue;
 	}
+	
+	/* Checking if we have reached the tail of the queue */
+	
 	
 	//ED("p->pt_tx:%llu,q->cons_now:%llu",p->pt_tx/NS_IN_S,q->cons_now/NS_IN_S);
 	if (q->head == q->tail || ts_cmp(p->pt_tx, q->cons_now) > 0) {
@@ -935,13 +942,10 @@ cons(void *_pa)
 	    ioctl(pa->pb->fd, NIOCTXSYNC, 0); // XXX just in case
 	    pending = 0;
 	    usleep(5);
-	    if (q->prod_ifname) {
-		set_tns_now(&q->cons_now, start_t);
-	    } else {
 		set_tns_now(&q->cons_now, q->t0);
-	    }
 	    continue;
 	}
+	ED("Head: %ld", (long)q->head);
 	ND(5, "drain len %ld now %ld tx %ld h %ld t %ld next %ld",
 		p->pktlen, q->cons_now, p->pt_tx, q->head, q->tail, p->next);
 	/* XXX inefficient but simple */
@@ -958,6 +962,7 @@ cons(void *_pa)
 	q->head = p->next;
 	/* drain packets from the queue */
 	q->rx++;
+	
 	NED("q->rx: %llu", q->rx);
 	// XXX barrier
     }
