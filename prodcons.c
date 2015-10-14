@@ -796,6 +796,7 @@ static void *
 pcap_prod(void *_pa)
 {
 	uint64_t need;
+	uint64_t bw = q->c_pmode.d[0];
 	struct pipe_args *pa = _pa;
 	struct _qs *q = &pa->q;
 	struct pcap_file *pcap = q->pcap;	//this has been already open by cmd_apply
@@ -819,27 +820,39 @@ pcap_prod(void *_pa)
 	/*
 	 * Setting t0 to the capture time
 	 */
-	q->t0 = convert_ts(h->resolution, aux);
+	//q->t0 = convert_ts(h->resolution, aux);
 	ED("Starting at time %llu", (long long unsigned int)q->t0);
-	q->qt_qout = q->prod_now = 0;
-	q->qt_tx = 0;
+	set_tns_now(&q->prod_now,q->t0);
+	//q->qt_qout = q->prod_now = 0;
+	//q->qt_tx = 0;
 	q->c_pmode.arg = q->pcap->list; /* first packet */
 	while (insert < repeat*h->tot_pkt && !do_abort){
-#if 0 /* XXX test ? */
-		if(aux->p == NULL){
-			q->cur_tt = aux->hdr.incl_len*8ULL*TIME_UNITS/bandwidth;
-			
-		} else {
-			q->cur_tt = convert_ts(h->resolution,aux->p)-q->qt_qout-q->t0;
-			bandwidth = aux->hdr.incl_len*8ULL*DEFAULT_BW/q->cur_tt;
-		}
-#endif /* XXX test ? */
-						
-	 	//ND("cur_tt: %llu", (long long unsigned int)q->cur_tt);
 		q->cur_len = aux->hdr.incl_len;
+		
+		
 		// XXX could be done inline ?
-		q->c_pmode.run(q, &q->c_pmode);	//computing transmission time
-		NED("pkt: %d\tcur_tt: %llu", insert, q->cur_tt);
+		
+	
+		switch (q->c_pmode.d[1]) { /* mode */
+		case PM_REAL:
+		/* in real mode, update the 'bw' according to the packet size.
+		 * XXX this is probably wrong and backwards.
+		 */
+		if(aux->p == NULL) { 
+			bw = (h->tot_len - aux->hdr.incl_len)*8ULL/(q->pt_tx*TIME_UNITS); /* average bps */
+			q->cur_tt = aux->hdr.incl_len*8ULL*TIME_UNITS/bw;
+			break;
+		}
+		q->cur_tt = convert_ts(h->resolution, aux->p) - q->qt_qout - q->t0;
+		break;
+
+		case PM_FAST:
+		q->cur_tt = 0;
+		break;
+
+		case PM_FIXED:
+		q->cur_tt = aux->hdr.orig_len*8ULL*TIME_UNITS/bw;
+		break;
 		q->qt_qout += q->cur_tt;
 		q->cur_pkt = (char*)aux->data;
 		enq_pcap(q);
@@ -856,7 +869,7 @@ pcap_prod(void *_pa)
 	struct q_pkt *pkt = pkt_at(q, q->prod_tail);
 	bzero(pkt, sizeof(*pkt));
 	q->prod_tail += sizeof(*pkt);
-	
+	pkt->pt_qout = q->qt_qout + q->cur_tt;
 	q->tail = q->prod_tail;
 	NED("q->tail:%d",(int)q->tail);
 
@@ -887,21 +900,10 @@ cons(void *_pa)
      * We need this value to insert a correct time value in cons_now 
      * using the set_tns_now() function.
      */
-    uint64_t start_t = 0;
+    //uint64_t start_t = 0;
 
     (void)cycles; // XXX disable warning
-    /* if the queue has been filled by a cap file, t0 contains the 
-     * time when the cap file has been produced (capturing time).
-     * Otherwise, we set t0 and cons->now to the current time (cons_now 
-     * is relative to t0).
-     */ 
-    if (q->prod_ifname) {
-	    ED("The capture file is found");
-	    set_tns_now(&start_t, 0);
-	    q->cons_now = 0;
-    } else {
-	    set_tns_now(&q->cons_now, q->t0);
-    }
+    set_tns_now(&q->cons_now, q->t0);
     while (!do_abort) { /* consumer, infinite */
 	struct q_pkt *p;
 
@@ -1022,13 +1024,11 @@ prodcons_main(void *_a)
     uint64_t need;
 
     setaffinity(a->cons_core);
-
+	set_tns_now(&q->t0, 0); /* starting reference */
     if (q->c_pmode.parse) {
-	D("operating in pcap streaming mode ");
-	return pcap_prodcons_main(a);
+		D("operating in pcap streaming mode ");
+		return pcap_prodcons_main(a);
     }
-    set_tns_now(&q->t0, 0); /* starting reference */
-
     a->pa = nm_open(q->prod_ifname, NULL, NETMAP_NO_TX_POLL, NULL);
     if (a->pa == NULL) {
 	ED("cannot open %s", q->prod_ifname);
