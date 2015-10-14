@@ -762,7 +762,7 @@ prod(void *_pa)
     D("exiting on abort");
     return NULL;
 }
-
+#if 0
 static inline int
 enq_pcap (struct _qs* q)
 {
@@ -778,7 +778,7 @@ enq_pcap (struct _qs* q)
 	q->tx++;
 	return 0;	
 }
-
+#endif
 static inline uint64_t 
 convert_ts (char resolution, packet_data *aux)
 {
@@ -797,6 +797,7 @@ pcap_prod(void *_pa)
 {
 	uint64_t need;
 	struct pipe_args *pa = _pa;
+	struct q_pkt *pkt = NULL;
 	struct _qs *q = &pa->q;
 	double bw = q->c_pmode.d[0];
 	struct pcap_file *pcap = q->pcap;	//this has been already open by cmd_apply
@@ -804,8 +805,8 @@ pcap_prod(void *_pa)
 	int insert = 0; //packet counter
 	packet_data *aux = NULL;
 	pcap_hdr_t *h = pcap->ghdr;
-
-	need = 2*(h->tot_len + h->tot_pkt*sizeof(struct q_pkt));	//TODO fix to correct size
+	uint64_t pcap_start_t;
+	need = (h->tot_len + h->tot_pkt*sizeof(struct q_pkt));	//TODO fix to correct size
 	q->buf =(char*)calloc(1, need);// XXX può bastare questa grandezza?
 	if(q->buf == NULL) {
 		ED("alloc %ld bytes for queue failed, exiting",(_P64)need);
@@ -823,11 +824,12 @@ pcap_prod(void *_pa)
 	//q->t0 = convert_ts(h->resolution, aux);
 	set_tns_now(&q->prod_now,q->t0);
 	ED("Starting at time %llu", (long long unsigned int)q->t0);
-	
+	pcap_start_t = convert_ts(h->resolution,aux);
 	//q->qt_qout = q->prod_now = 0;
 	//q->qt_tx = 0;
 	while (insert < repeat*h->tot_pkt && !do_abort){
-		q->cur_len = aux->hdr.incl_len;
+		pkt = pkt_at(q,q->prod_tail);
+		pkt->pktlen = aux->hdr.incl_len;
 		
 		
 		// XXX could be done inline ?
@@ -842,27 +844,30 @@ pcap_prod(void *_pa)
 				ED("q->qt_tx%llu",q->qt_tx);
 				bw = TIME_UNITS*(h->tot_len - aux->hdr.incl_len)*8ULL/(q->qt_tx); /* average bps */
 				ED("ultimo caso bw:%llu",bw);
-				q->cur_tt = aux->hdr.incl_len*8ULL*TIME_UNITS/bw;
-				
+				pkt->pt_tx = aux->hdr.incl_len*8ULL*TIME_UNITS/bw + q->qt_tx;				
 				break;
 			}
-			q->cur_tt = convert_ts(h->resolution, aux->p) - convert_ts(h->resolution,aux);
+			pkt->pt_tx = convert_ts(h->resolution, aux->p) - pcap_start_t;
+			q->qt_tx = pkt->pt_tx;
 			break;
 
 		case PM_FAST:
-			q->cur_tt = 0;
+			pkt->pt_tx = 0;
 			break;
 
 		case PM_FIXED:
-			q->cur_tt = aux->hdr.orig_len*8ULL*TIME_UNITS/bw;
+			pkt->pt_tx = aux->hdr.orig_len*8ULL*TIME_UNITS/bw +q->qt_tx;
+			q->qt_tx = pkt->pt_tx;
 			break;
 		}
-		q->qt_qout += q->cur_tt;
-		q->cur_pkt = (char*)aux->data;
-		enq_pcap(q);
+		/* the same as in enq_pcap*/
+		need = pad(pkt->pktlen)+sizeof(*pkt);
+		nm_pkt_copy((char*)aux->data,(char*)(pkt+1),pkt->pktlen);
+		pkt->next = q->prod_tail + need;
+		q->tx++;
+		q->prod_tail = pkt->next;
 		NED("q->prod_tail = %llu", q->prod_tail);
-		q->qt_tx += q->cur_tt;//aggiorniamo l'inizio della trasmissione al nuovo pacchetto
-		insert++;
+		insert++; /* statistics */
 		aux = aux->p;
 	}
 	/* adding a record to tell the cons to reset its clock and start
@@ -870,11 +875,12 @@ pcap_prod(void *_pa)
 	 * Setting the next fiels to value 0 let the cons restart 
 	 * extracting pkt from the head.
 	 */
-	struct q_pkt *pkt = pkt_at(q, q->prod_tail);
-	bzero(pkt, sizeof(*pkt));
-	q->prod_tail += sizeof(*pkt);
-	pkt->pt_qout = q->qt_qout + q->cur_tt;
-	pkt->next = q->prod_tail;
+	struct q_pkt *last = pkt_at(q, q->prod_tail);
+	bzero(last, sizeof(*last));
+	q->prod_tail += sizeof(*last);
+	//pkt->pt_qout = q->qt_qout + q->cur_tt;
+	last->pt_tx = q->qt_tx;//XXX timestamp record 
+	last->next = q->prod_tail;
 	q->tail = q->prod_tail;
 	NED("q->tail:%d",(int)q->tail);
 
