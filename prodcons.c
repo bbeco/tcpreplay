@@ -799,7 +799,7 @@ pcap_prod(void *_pa)
 	struct pipe_args *pa = _pa;
 	struct q_pkt *pkt = NULL;
 	struct _qs *q = &pa->q;
-	double bw = q->c_pmode.d[0];
+	double bw = q->c_pmode.d[0];	//This has been set by the parse function inside q->c_pmode
 	struct pcap_file *pcap = q->pcap;	//this has been already open by cmd_apply
 	int repeat = 1; //number of copy of the same packets set in queue
 	int insert = 0; //packet counter
@@ -819,37 +819,35 @@ pcap_prod(void *_pa)
 		goto fail;
 	}
 	/*
-	 * Setting t0 to the capture time
+	 * Setting the pcap_prod starting time
 	 */
-	//q->t0 = convert_ts(h->resolution, aux);
 	set_tns_now(&q->prod_now,q->t0);
-	ED("Starting at time %llu", (long long unsigned int)q->t0);
+	ED("Starting at time %ld", (long)q->t0);
+	
+	/* Saving the first pkt's timestamp */
 	pcap_start_t = convert_ts(h->resolution,aux);
-	//q->qt_qout = q->prod_now = 0;
-	//q->qt_tx = 0;
+	
 	while (insert < repeat*h->tot_pkt && !do_abort){
 		pkt = pkt_at(q,q->prod_tail);
 		pkt->pktlen = aux->hdr.incl_len;
 		
-		
-		// XXX could be done inline ?
-		
-	
 		switch (q->c_pmode.d[1]) { /* mode */
 		case PM_REAL:
-		/* in real mode, update the 'bw' according to the packet size.
-		 * XXX this is probably wrong and backwards.
-		 */
-			if(aux->p == NULL) { 
-				ED("q->qt_tx%llu",q->qt_tx);
+			/* 
+			 * In real mode, the bandwidth used for computing the 
+			 * transmission time for the last pkt is obtained with 
+			 * an average on all the previous pkt sent.
+			 */
+			if(aux->p == NULL) {	//last pkt
+				NED("q->qt_tx%ld", (long)q->qt_tx);
 				bw = TIME_UNITS*(h->tot_len - aux->hdr.incl_len)*8ULL/(q->qt_tx); /* average bps */
-				ED("ultimo caso bw:%llu",bw);
+				ED("ultimo caso bw:%ld", (long)bw);
 				pkt->pt_tx = aux->hdr.incl_len*8ULL*TIME_UNITS/bw + q->qt_tx;				
 				break;
 			}
 			pkt->pt_tx = convert_ts(h->resolution, aux->p) - pcap_start_t;
 			q->qt_tx = pkt->pt_tx;
-			break;
+		break;
 
 		case PM_FAST:
 			pkt->pt_tx = 0;
@@ -870,15 +868,15 @@ pcap_prod(void *_pa)
 		insert++; /* statistics */
 		aux = aux->p;
 	}
-	/* adding a record to tell the cons to reset its clock and start
+	/* 
+	 * adding a record to tell the cons to reset its clock and start
 	 * the transmission from the beginning.
-	 * Setting the next fiels to value 0 let the cons restart 
+	 * Setting the next field to value 0 let the cons restart 
 	 * extracting pkt from the head.
 	 */
 	struct q_pkt *last = pkt_at(q, q->prod_tail);
 	bzero(last, sizeof(*last));
 	q->prod_tail += sizeof(*last);
-	//pkt->pt_qout = q->qt_qout + q->cur_tt;
 	last->pt_tx = q->qt_tx;//XXX timestamp record 
 	last->next = q->prod_tail;
 	q->tail = q->prod_tail;
@@ -905,40 +903,25 @@ cons(void *_pa)
     struct _qs *q = &pa->q;
     int cycles = 0;
     int pending = 0;
-    
-    /*
-     * This is used when a cap file has been provided.
-     * We need this value to insert a correct time value in cons_now 
-     * using the set_tns_now() function.
-     */
-    //uint64_t start_t = 0;
 
     (void)cycles; // XXX disable warning
     set_tns_now(&q->cons_now, q->t0);
     while (!do_abort) { /* consumer, infinite */
 	struct q_pkt *p;
-
-	//ED("Head: %ld", (long)q->head);
-
 	p = pkt_at(q,q->head);
 	__builtin_prefetch (q->buf + p->next);
-	if (p->next == q->tail && q->c_pmode.parse) {
+	
+	if (p->next == q->tail && q->c_pmode.parse) {	//reset record
 		ED("Restart record FOUND");
-		/* The consumers' clock is restarted just by putting 
-		 * cons_now to 0. Since we use the function set_tns_now
-		 * for simulating the passing of time, we must also 
-		 * reset the start_t with an updated value.
+		/* The consumers restarts by simply recomputing a 
+		 * correct time in t0 and restarting q->cons_now.
 		 */
 		set_tns_now(&q->t0,0); 
 		set_tns_now(&q->cons_now, q->t0);
-		q->head = 0;
+		q->head = 0;	//restart from beginning of the queue
 		continue;
 	}
-	
-	/* Checking if we have reached the tail of the queue */
-	
-	
-	//ED("p->pt_tx:%llu,q->cons_now:%llu",p->pt_tx/NS_IN_S,q->cons_now/NS_IN_S);
+
 	if (q->head == q->tail || ts_cmp(p->pt_tx, q->cons_now) > 0) {
 	    /*ND(4,"                 >>>> TXSYNC, pkt not ready yet h %ld t %ld now %ld tx %ld",
 		q->head, q->tail, q->cons_now, p->pt_tx);*/
@@ -948,7 +931,7 @@ cons(void *_pa)
 	    ioctl(pa->pb->fd, NIOCTXSYNC, 0); // XXX just in case
 	    pending = 0;
 	    usleep(5);
-		set_tns_now(&q->cons_now, q->t0);
+	    set_tns_now(&q->cons_now, q->t0);
 	    continue;
 	}
 	ED("Head: %ld", (long)q->head);
@@ -976,7 +959,10 @@ cons(void *_pa)
     return NULL;
 }
 
-
+/*
+ * In case of pcap file as input, the program acts in 2 different 
+ * phases. It first fill the queue and then starts the cons()
+ */
 static void *
 pcap_prodcons_main(void *_a)
 {
