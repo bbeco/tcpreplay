@@ -806,8 +806,8 @@ pcap_prod(void *_pa)
 	packet_data *aux = NULL;
 	pcap_hdr_t *h = pcap->ghdr;
 	uint64_t pcap_start_t;
-	need = (h->tot_len + h->tot_pkt*sizeof(struct q_pkt));	//TODO fix to correct size
-	q->buf =(char*)calloc(1, need);// XXX può bastare questa grandezza?
+	need = (h->tot_len + h->tot_pkt*sizeof(struct q_pkt));
+	q->buf =(char*)calloc(1, need);
 	if(q->buf == NULL) {
 		ED("alloc %ld bytes for queue failed, exiting",(_P64)need);
 		goto fail;
@@ -868,18 +868,7 @@ pcap_prod(void *_pa)
 		insert++; /* statistics */
 		aux = aux->p;
 	}
-	/* 
-	 * adding a record to tell the cons to reset its clock and start
-	 * the transmission from the beginning.
-	 * Setting the next field to value 0 let the cons restart 
-	 * extracting pkt from the head.
-	 */
-	struct q_pkt *last = pkt_at(q, q->prod_tail);
-	bzero(last, sizeof(*last));
-	q->prod_tail += sizeof(*last);
-	last->pt_tx = q->qt_tx;//XXX timestamp record 
-	last->next = q->prod_tail;
-	q->tail = q->prod_tail;
+	q->tail = q->prod_tail;	/* notify */
 	NED("q->tail:%d",(int)q->tail);
 
 	return NULL;
@@ -911,8 +900,8 @@ cons(void *_pa)
 	p = pkt_at(q,q->head);
 	__builtin_prefetch (q->buf + p->next);
 	
-	if (p->next == q->tail && q->c_pmode.parse) {	//reset record
-		ED("Restart record FOUND");
+	if (q->head == q->tail && q->c_pmode.parse) {	//reset record
+		ED("Transmission restarted");
 		/* The consumers restarts by simply recomputing a 
 		 * correct time in t0 and restarting q->cons_now.
 		 */
