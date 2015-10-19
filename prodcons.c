@@ -806,7 +806,7 @@ pcap_prod(void *_pa)
 	packet_data *aux = NULL;
 	pcap_hdr_t *h = pcap->ghdr;
 	uint64_t pcap_start_t;
-	need = (h->tot_len + h->tot_pkt*sizeof(struct q_pkt));	//TODO fix to correct size
+	need = (h->tot_len + (h->tot_pkt + 1)*sizeof(struct q_pkt));	//TODO fix to correct size
 	q->buf =(char*)calloc(1, need);// XXX può bastare questa grandezza?
 	if(q->buf == NULL) {
 		ED("alloc %ld bytes for queue failed, exiting",(_P64)need);
