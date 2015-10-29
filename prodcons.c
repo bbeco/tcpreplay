@@ -806,7 +806,7 @@ pcap_prod(void *_pa)
 	packet_data *aux = NULL;
 	pcap_hdr_t *h = pcap->ghdr;
 	uint64_t pcap_start_t;
-	need = (h->tot_len + h->tot_pkt*sizeof(struct q_pkt));
+	need = 2*(h->tot_len + h->tot_pkt*sizeof(struct q_pkt)); //FIXME to correct size
 	q->buf =(char*)calloc(1, need);
 	if(q->buf == NULL) {
 		ED("alloc %ld bytes for queue failed, exiting",(_P64)need);
@@ -841,7 +841,6 @@ pcap_prod(void *_pa)
 			if(aux->p == NULL) {	//last pkt
 				NED("q->qt_tx%ld", (long)q->qt_tx);
 				bw = TIME_UNITS*(h->tot_len - aux->hdr.incl_len)*8ULL/(q->qt_tx); /* average bps */
-				ED("ultimo caso bw:%ld", (long)bw);
 				pkt->pt_tx = aux->hdr.incl_len*8ULL*TIME_UNITS/bw + q->qt_tx;				
 				break;
 			}
@@ -923,7 +922,7 @@ cons(void *_pa)
 	    set_tns_now(&q->cons_now, q->t0);
 	    continue;
 	}
-	ED("Head: %ld", (long)q->head);
+	NED("Head: %ld", (long)q->head);
 	ND(5, "drain len %ld now %ld tx %ld h %ld t %ld next %ld",
 		p->pktlen, q->cons_now, p->pt_tx, q->head, q->tail, p->next);
 	/* XXX inefficient but simple */
