@@ -806,8 +806,9 @@ pcap_prod(void *_pa)
 	packet_data *aux = NULL;
 	pcap_hdr_t *h = pcap->ghdr;
 	uint64_t pcap_start_t;
-	need = (h->tot_len + (h->tot_pkt + 1)*sizeof(struct q_pkt));	//TODO fix to correct size
-	q->buf =(char*)calloc(1, need);// XXX può bastare questa grandezza?
+	
+	need = 2*(h->tot_len + h->tot_pkt*sizeof(struct q_pkt)); //FIXME to correct size
+	q->buf =(char*)calloc(1, need);
 	if(q->buf == NULL) {
 		ED("alloc %ld bytes for queue failed, exiting",(_P64)need);
 		goto fail;
@@ -841,7 +842,6 @@ pcap_prod(void *_pa)
 			if(aux->p == NULL) {	//last pkt
 				NED("q->qt_tx%ld", (long)q->qt_tx);
 				bw = TIME_UNITS*(h->tot_len - aux->hdr.incl_len)*8ULL/(q->qt_tx); /* average bps */
-				ED("ultimo caso bw:%ld", (long)bw);
 				pkt->pt_tx = aux->hdr.incl_len*8ULL*TIME_UNITS/bw + q->qt_tx;				
 				break;
 			}
@@ -868,18 +868,7 @@ pcap_prod(void *_pa)
 		insert++; /* statistics */
 		aux = aux->p;
 	}
-	/* 
-	 * adding a record to tell the cons to reset its clock and start
-	 * the transmission from the beginning.
-	 * Setting the next field to value 0 let the cons restart 
-	 * extracting pkt from the head.
-	 */
-	struct q_pkt *last = pkt_at(q, q->prod_tail);
-	bzero(last, sizeof(*last));
-	q->prod_tail += sizeof(*last);
-	last->pt_tx = q->qt_tx;//XXX timestamp record 
-	last->next = q->prod_tail;
-	q->tail = q->prod_tail;
+	q->tail = q->prod_tail;	/* notify */
 	NED("q->tail:%d",(int)q->tail);
 
 	return NULL;
@@ -911,8 +900,8 @@ cons(void *_pa)
 	p = pkt_at(q,q->head);
 	__builtin_prefetch (q->buf + p->next);
 	
-	if (p->next == q->tail && q->c_pmode.parse) {	//reset record
-		ED("Restart record FOUND");
+	if (q->head == q->tail && q->c_pmode.parse) {	//reset record
+		ED("Transmission restarted");
 		/* The consumers restarts by simply recomputing a 
 		 * correct time in t0 and restarting q->cons_now.
 		 */
@@ -934,7 +923,7 @@ cons(void *_pa)
 	    set_tns_now(&q->cons_now, q->t0);
 	    continue;
 	}
-	ED("Head: %ld", (long)q->head);
+	NED("Head: %ld", (long)q->head);
 	ND(5, "drain len %ld now %ld tx %ld h %ld t %ld next %ld",
 		p->pktlen, q->cons_now, p->pt_tx, q->head, q->tail, p->next);
 	/* XXX inefficient but simple */
