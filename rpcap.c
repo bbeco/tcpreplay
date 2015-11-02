@@ -83,7 +83,7 @@ void destroy_pcap_list(struct pcap_file **file)
  */
 void insert_pkt(struct pcap_file *file, packet_data *pkt)
 {
-    packet_data *a, *b;
+    packet_data *a, *b = NULL;
 
     if (pkt == NULL)
 	return;
