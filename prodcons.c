@@ -1449,8 +1449,6 @@ struct _sm {	/* string and multiplier */
 
 /*
  * parse a generic value
- * parsa una stringa cercando numero + fattore di conversione (kK,mM,gG)
- * in d c'è il valore con il giusto scaling
  */
 static double
 parse_gen(const char *arg, const struct _sm *conv, int *err)
