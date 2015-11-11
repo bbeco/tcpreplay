@@ -32,61 +32,66 @@ Replay mode accepts the following options:
 ###Bandwidth
 If the -B option is used, tcpreplay transmits packets with the given bandwidth.
 Bandwidths are expressed in bits per second, can be followed by a
-    character specifying a different unit e.g.
+character specifying a different unit e.g.
 
-	b/B	bits per second
-	k/K	kbits/s (10^3 bits/s)
-	m/M	mbits/s (10^6 bits/s)
-	g/G	gbits/s (10^9 bits/s)
+<table>
+<tr><td>b/B</td><td>bits per second</td></tr>
+<tr><td>k/K</td><td>kbits/s (10^3 bits/s)</td></tr>
+<tr><td>m/M</td><td>mbits/s (10^6 bits/s)</td></tr>
+<tr><td>g/G</td><td>gbits/s (10^9 bits/s)</td></tr>
+</table>
+
 Currently implemented options
 
-    const,b		constant bw, excluding mac framing
-    ether,b		constant bw, including ethernet framing
-			(20 bytes framing + 4 bytes crc)
-			
+<table>
+<tr><td>const,b</td><td>constant bw, excluding mac framing</td></tr>
+<tr><td>ether,b</td><td>constant bw, including ethernet framing (20 bytes framing + 4 bytes crc)</td></tr>
+</table>
+
 ###Delay			
 Specifiyng the delay options -D let the program randomly choose a sequence of 
 values to be used as delays introduced at each packet.
 Times are in nanoseconds, can be followed by a character specifying
     a different unit e.g.
 
-	n	nanoseconds
-	u	microseconds
-	m	milliseconds
-	s	seconds
+<table>
+<tr><td>n</td><td>nanoseconds</td></tr>
+<tr><td>u</td><td>microseconds</td></tr>
+<tr><td>m</td><td>milliseconds</td></tr>
+<tr><td>s</td><td>seconds</td></tr>
+</table>
 
-    Currently implemented options:
+Currently implemented options:
 
-    constant,t		constant delay equal to t
-
-    uniform,tmin,tmax	uniform delay between tmin and tmax
-
-    exp,tavg,tmin	exponential distribution with average tavg
-			and minimum tmin (corresponds to an exponential
-			distribution with argument 1/(tavg-tmin) )
+<table>
+<tr><td>constant,t</td><td>constant delay equal to t</td></tr>
+<tr><td>uniform,tmin,tmax</td><td>uniform delay between tmin and tmax</td></tr>
+<tr><td>exp,tavg,tmin</td><td>exponential distribution with average tavg and 
+minimum tmin (corresponds to an exponential distribution with argument 1/(tavg-tmin) )</td></tr>
+</table>
 
 ###Queue size
 The -Q options set the queue size to the given value. If the user does not 
 specify a queue size, 50k is used as default value.
 Sizes are in bytes, but suffixes can be used for different units e.g.
-	k/K		kilobytes (1024 bytes)
-	m/M		megabytes (1024^2 bytes)
-	g/G		gigabytes (1024^3 bytes)
+
+<table>
+<tr><td>K/k</td><td>kilobytes (1024 bytes)</td></tr>
+<tr><td>m/M</td><td>megabytes (1024^2 bytes)</td></tr>
+<tr><td>g/G</td><td>gigabytes (1024^3 bytes)</td></tr>
+</table>
 
 ###Loss probability
 The -L option sets a loss probability. Loss is expressed as packet or bit error 
 rate, which is an absolute number between 0 and 1 (typically small).
 Currently implemented options
 
-    plr,p		uniform packet loss rate p, independent
-				of packet size
+<table>
+<tr><td>plr,p</td><td>uniform packet loss rate p, independent of packet size</td></tr>
+<tr><td>burst,p</td><td>burst loss with burst probability p and burst length uniformly distributed between lmin and lmax</td></tr>
+<tr><td>ber,p</td><td>uniformly distributed bit error rate p, so actual loss prob. depends on size.</td></tr>
+</table>
 
-    burst,p,lmin,lmax 	burst loss with burst probability p and
-						burst length uniformly distributed between
-						lmin and lmax
-
-    ber,p		uniformly distributed bit error rate p,
-				so actual loss prob. depends on size.
 ###Interface
 The -i option specifies the interface to be used. Two interfaces are mandatory 
 while operating in replay mode. On the other hand, in pcap mode, tcpreplay needs
@@ -102,10 +107,12 @@ Valid range is between 1 and 8192.
 ###Transmission mode
 The -m option specifies the pcap transmission mode.
 Currently implemented options are
---- | --- 	
-real | packets are sent using times taken from pcap
-fast | packets are sent as fast as possible
-fixed,b | packets are sent with a fixed bandwidth b
+
+<table>
+<tr><td>real</td><td>packets are sent using times taken from pcap</td></tr>
+<tr><td>fast</td><td>packets are sent as fast as possible</td></tr>
+<tr><td>fixed,b</td><td>packets are sent with a fixed bandwidth b</td></tr>
+</table>
 
 ##Examples
 In replay mode, reads incoming traffic from eth0 and retransmits it on eth1 
