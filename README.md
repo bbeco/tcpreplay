@@ -103,24 +103,32 @@ Valid range is between 1 and 8192.
 The -m option specifies the pcap transmission mode.
 Currently implemented options are
 	
-	real	packets are sent using times taken from pcap
-	fast	packets are sent as fast as possible
-	fixed,b	packets are sent with a fixed bandwidth b
+real | packets are sent using times taken from pcap
+fast | packets are sent as fast as possible
+fixed,b | packets are sent with a fixed bandwidth b
 
 ##Examples
 In replay mode, reads incoming traffic from eth0 and retransmits it on eth1 
- `sudo ./tcpreplay -i netmap:eth0 -i netmap:eth1`
+ ```
+ sudo ./tcpreplay -i netmap:eth0 -i netmap:eth1
+ ```
 In replay mode, reads incoming traffic from eth0 and retransmits it on eth1 
 with constant bandwidth 100k, connstant delay 1s and uniform loss probability 
 0.5
- `sudo ./tcpreplay -i netmap:eth0 -i netmap:eth1 -B const,100k -D const,1s -L 
- plr,0.5`
+ ```
+ sudo ./tcpreplay -i netmap:eth0 -i netmap:eth1 -B const,100k -D const,1s -L 
+ plr,0.5
+ ```
 In pcap mode, reads from a pcap file and retransmits on a port of the VALE 
 switch with fast transmission mode
- `sudo ./tcpreplay -i file.cap -i vale:1 -m fast`
+ ```
+ sudo ./tcpreplay -i file.cap -i vale:1 -m fast
+ ```
  In pcap mode, reads from a pcap file and retransmits on a pipe using the VALE 
 switch with fixed transmission mode
- `sudo ./tcpreplay -i file.cap -i vale1:a\{1 -m fixed,100k`
+ ```
+ sudo ./tcpreplay -i file.cap -i vale1:a\{1 -m fixed,100k
+ ```
  
 ##Author
 This code is written by Luigi Rizzo, Andrea Beconcini, Francesco Mola and 
