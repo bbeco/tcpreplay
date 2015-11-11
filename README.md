@@ -102,7 +102,7 @@ Valid range is between 1 and 8192.
 ###Transmission mode
 The -m option specifies the pcap transmission mode.
 Currently implemented options are
-	
+--- | --- 	
 real | packets are sent using times taken from pcap
 fast | packets are sent as fast as possible
 fixed,b | packets are sent with a fixed bandwidth b
