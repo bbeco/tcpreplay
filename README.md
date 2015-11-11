@@ -76,7 +76,7 @@ specify a queue size, 50k is used as default value.
 Sizes are in bytes, but suffixes can be used for different units e.g.
 
 <table>
-<tr><td>K/k</td><td>kilobytes (1024 bytes)</td></tr>
+<tr><td>k/K</td><td>kilobytes (1024 bytes)</td></tr>
 <tr><td>m/M</td><td>megabytes (1024^2 bytes)</td></tr>
 <tr><td>g/G</td><td>gigabytes (1024^3 bytes)</td></tr>
 </table>
