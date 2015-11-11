@@ -1087,7 +1087,7 @@ usage(void)
 {
 	fprintf(stderr,
 	    "usage: prodcons [-v] [-D delay] [-B bps] [-L loss] [-Q qsize] \n"
-	    "\t[-b burst] [-w wait_time] [-m fast|real|fixed...] -i ifa-or-pcap-file -i ifb\n");
+	    "\t[-b burst] [-m fast|real|fixed...] -i ifa-or-pcap-file -i ifb\n");
 	exit(1);
 }
 
